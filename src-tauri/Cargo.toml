@@ -1,0 +1,21 @@
+[package]
+name = "tauri-tool-ai"
+version = "0.1.0"
+description = "面向内部同事的 Windows 桌面效率工具箱"
+authors = ["王俊"]
+license = ""
+repository = ""
+edition = "2021"
+rust-version = "1.70"
+
+[lib]
+name = "app_lib"
+crate-type = ["lib", "cdylib", "staticlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = [] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
