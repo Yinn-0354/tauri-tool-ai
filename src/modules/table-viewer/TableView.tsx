@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState, useCallback } from "react";
 import { Table, message } from "antd";
 import type { TableData } from "@/api/table";
 import { fetchData } from "@/api/table";
@@ -12,6 +12,8 @@ export default function TableView() {
   const [loading, setLoading] = useState(false);
   const [page, setPage] = useState(1);
   const [pageSize, setPageSize] = useState(100);
+  const [tableHeight, setTableHeight] = useState(400);
+  const containerRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     if (!currentTable) {
@@ -24,6 +26,18 @@ export default function TableView() {
       .catch(() => message.error("加载数据失败"))
       .finally(() => setLoading(false));
   }, [currentTable, page, pageSize]);
+
+  // 监听容器高度变化
+  const measureRef = useCallback((el: HTMLDivElement | null) => {
+    if (!el) return;
+    containerRef.current = el;
+    const observer = new ResizeObserver((entries) => {
+      for (const entry of entries) {
+        setTableHeight(entry.contentRect.height);
+      }
+    });
+    observer.observe(el);
+  }, []);
 
   if (!currentTable) return <Empty description="请先选择数据源并加载" />;
   if (loading) return <Loading />;
@@ -49,25 +63,30 @@ export default function TableView() {
     return record;
   });
 
+  // Ant Design Table pagination 大约 56px，留给数据行的高度需要减去
+  const scrollY = tableHeight > 56 ? tableHeight - 56 : 0;
+
   return (
-    <Table
-      columns={columns}
-      dataSource={dataSource}
-      rowKey="_key"
-      size="small"
-      scroll={{ x: "max-content" }}
-      pagination={{
-        current: page,
-        pageSize,
-        total: data.total,
-        showSizeChanger: true,
-        pageSizeOptions: ["50", "100", "200", "500"],
-        showTotal: (total) => `共 ${total} 行`,
-        onChange: (p, ps) => {
-          setPage(p);
-          setPageSize(ps);
-        },
-      }}
-    />
+    <div ref={measureRef} style={{ height: "100%" }}>
+      <Table
+        columns={columns}
+        dataSource={dataSource}
+        rowKey="_key"
+        size="small"
+        scroll={{ x: "max-content", y: scrollY }}
+        pagination={{
+          current: page,
+          pageSize,
+          total: data.total,
+          showSizeChanger: true,
+          pageSizeOptions: ["50", "100", "200", "500"],
+          showTotal: (total) => `共 ${total} 行`,
+          onChange: (p, ps) => {
+            setPage(p);
+            setPageSize(ps);
+          },
+        }}
+      />
+    </div>
   );
 }

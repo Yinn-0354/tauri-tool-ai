@@ -38,20 +38,23 @@ export default function TableViewerModule() {
   };
 
   return (
-    <Layout style={{ height: "calc(100vh - 104px)", background: "#fff" }}>
+    <Layout style={{ height: "100%", background: "#fff" }}>
       <Sider width={280} theme="light" style={{ borderRight: "1px solid #f0f0f0" }}>
         <SourcePanel
           selectedId={selectedSource?.id ?? null}
           onSelect={handleSelectSource}
         />
       </Sider>
-      <Content style={{ padding: "12px 16px", overflow: "auto" }}>
+      <Content style={{ display: "flex", flexDirection: "column", overflow: "hidden" }}>
+        {/* 工具栏 — 固定在顶部 */}
         <div
           style={{
+            flexShrink: 0,
             display: "flex",
             justifyContent: "space-between",
             alignItems: "center",
-            marginBottom: 12,
+            padding: "12px 16px",
+            borderBottom: "1px solid #f0f0f0",
           }}
         >
           <Segmented<ViewMode>
@@ -77,9 +80,12 @@ export default function TableViewerModule() {
           )}
         </div>
 
-        {viewMode === "table" && <TableView />}
-        {viewMode === "card" && <CardView />}
-        {viewMode === "template" && <TemplateView />}
+        {/* 视图区域 — 填充剩余高度，滚动由各子组件自己处理 */}
+        <div style={{ flex: 1, padding: "12px 16px", minHeight: 0 }}>
+          {viewMode === "table" && <TableView />}
+          {viewMode === "card" && <CardView />}
+          {viewMode === "template" && <TemplateView />}
+        </div>
       </Content>
     </Layout>
   );

@@ -8,6 +8,7 @@ import Loading from "./components/Loading";
 import TableViewerModule from "./modules/table-viewer";
 import BlameViewerModule from "./modules/blame-viewer";
 import AiAgentModule from "./modules/ai-agent";
+import "./App.css";
 import { setBaseUrl } from "./api/client";
 
 function App() {
