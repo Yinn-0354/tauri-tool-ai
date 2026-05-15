@@ -6,3 +6,5 @@ __pycache__/
 *.pyc
 .env
 .claude/settings.local.json
+tests/artifacts/
+.pytest_cache/

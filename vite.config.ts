@@ -11,11 +11,12 @@ export default defineConfig({
   },
   clearScreen: false,
   server: {
+    host:"0.0.0.0",
     port: 1420,
     strictPort: true,
     proxy: {
       "/api": {
-        target: "http://127.0.0.1:8765",
+        target: "http://127.0.0.1:18765",
         changeOrigin: true,
       },
     },

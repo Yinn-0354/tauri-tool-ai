@@ -3,6 +3,7 @@
   "description": "默认权限",
   "windows": ["main"],
   "permissions": [
-    "core:default"
+    "core:default",
+    "dialog:default"
   ]
 }
