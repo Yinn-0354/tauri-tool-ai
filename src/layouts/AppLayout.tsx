@@ -16,6 +16,31 @@ const menuItems = [
   { key: "/ai-agent", icon: <RobotOutlined />, label: "AI Agent" },
 ];
 
+const logoStyle: React.CSSProperties = {
+  height: 48,
+  margin: 16,
+  display: "flex",
+  alignItems: "center",
+  justifyContent: "center",
+  color: "#fff",
+  fontSize: 16,
+  fontWeight: 600,
+  whiteSpace: "nowrap",
+};
+
+const tabsStyle: React.CSSProperties = {
+  paddingLeft: 8,
+  paddingTop: 8,
+  background: "#fff",
+  flexShrink: 0,
+};
+
+const contentStyle: React.CSSProperties = {
+  flex: 1,
+  overflow: "auto",
+  background: "#f5f5f5",
+};
+
 export default function AppLayout() {
   const navigate = useNavigate();
   const location = useLocation();
@@ -37,19 +62,7 @@ export default function AppLayout() {
   return (
     <Layout style={{ height: "100vh", overflow: "hidden" }}>
       <Sider width={200} theme="dark">
-        <div
-          style={{
-            height: 48,
-            margin: 16,
-            display: "flex",
-            alignItems: "center",
-            justifyContent: "center",
-            color: "#fff",
-            fontSize: 16,
-            fontWeight: 600,
-            whiteSpace: "nowrap",
-          }}
-        >
+        <div style={logoStyle}>
           Tauri Tool AI
         </div>
         <Menu
@@ -89,14 +102,9 @@ export default function AppLayout() {
               }
             }
           }}
-          style={{
-            paddingLeft: 8,
-            paddingTop: 8,
-            background: "#fff",
-            flexShrink: 0,
-          }}
+          style={tabsStyle}
         />
-        <Content style={{ flex: 1, overflow: "auto", background: "#f5f5f5" }}>
+        <Content style={contentStyle}>
           <Outlet />
         </Content>
       </Layout>

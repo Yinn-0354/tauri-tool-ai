@@ -6,6 +6,12 @@ import AddSourceFormFile from "./AddSourceFormFile";
 import AddSourceFormWps from "./AddSourceFormWps";
 import AddSourceFormDb from "./AddSourceFormDb";
 
+const SOURCE_TYPE_OPTIONS = [
+  { value: "file", label: "本地文件" },
+  { value: "wps", label: "WPS 在线表格" },
+  { value: "db", label: "数据库" },
+];
+
 interface Props {
   open: boolean;
   onClose: () => void;
@@ -30,7 +36,13 @@ export default function AddSourceModal({ open, onClose, onAdded }: Props) {
           password: values.dbPassword,
         });
       }
-      const source = await addSource(values.name, values.type, path);
+      const source = await addSource(
+        values.name,
+        values.type,
+        path,
+        values.headerRow ?? 0,
+        (values.skipRows ?? []).map(Number),
+      );
       message.success("数据源已添加");
       onAdded(source as unknown as TableSource);
       form.resetFields();
@@ -63,15 +75,13 @@ export default function AddSourceModal({ open, onClose, onAdded }: Props) {
       onCancel={onClose}
       confirmLoading={loading}
     >
-      <Form form={form} layout="vertical" initialValues={{ type: "file" }}>
+      <Form
+        form={form}
+        layout="vertical"
+        initialValues={{ type: "file", headerRow: 1, skipRows: [] }}
+      >
         <Form.Item name="type" label="类型" rules={[{ required: true }]}>
-          <Select
-            options={[
-              { value: "file", label: "本地文件" },
-              { value: "wps", label: "WPS 在线表格" },
-              { value: "db", label: "数据库" },
-            ]}
-          />
+          <Select options={SOURCE_TYPE_OPTIONS} />
         </Form.Item>
 
         {renderForm()}

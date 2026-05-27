@@ -31,10 +31,10 @@ export default function CardView() {
 
   // 按指定列分组
   const groupCol = groupByColumn || data.columns[0];
+  const groupIdx = data.columns.indexOf(groupCol);
   const groups = new Map<string, unknown[][]>();
   data.rows.forEach((row) => {
-    const idx = data.columns.indexOf(groupCol);
-    const key = String(row[idx] ?? "(空)");
+    const key = String(row[groupIdx] ?? "(空)");
     if (!groups.has(key)) groups.set(key, []);
     groups.get(key)!.push(row);
   });

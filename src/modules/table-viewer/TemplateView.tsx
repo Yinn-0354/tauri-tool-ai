@@ -9,6 +9,19 @@ import Loading from "@/components/Loading";
 const { Text, Paragraph } = Typography;
 const { TextArea } = Input;
 
+function renderTemplate(
+  row: unknown[],
+  columns: string[],
+  templateString: string,
+): string {
+  if (!templateString) return JSON.stringify(row);
+  return templateString.replace(/\{(\w+)\}|\{\*\}/g, (match, col) => {
+    if (match === "{*}") return row.map((c) => String(c ?? "")).join(" | ");
+    const idx = columns.indexOf(col);
+    return idx >= 0 ? String(row[idx] ?? "") : match;
+  });
+}
+
 export default function TemplateView() {
   const { currentTable, templateString, setTemplateString } = useTableViewerStore();
   const [data, setData] = useState<TableData | null>(null);
@@ -30,16 +43,6 @@ export default function TemplateView() {
   if (loading) return <Loading />;
   if (!data) return <Empty />;
 
-  // 模板替换: {colName} → 当前行对应列的值; {*} → 全部列拼接
-  const renderTemplate = (row: unknown[]) => {
-    if (!templateString) return JSON.stringify(row);
-    return templateString.replace(/\{(\w+)\}|\{\*\}/g, (match, col) => {
-      if (match === "{*}") return row.map((c) => String(c ?? "")).join(" | ");
-      const idx = data.columns.indexOf(col);
-      return idx >= 0 ? String(row[idx] ?? "") : match;
-    });
-  };
-
   return (
     <div>
       <Text>模板（{`{列名}`}或{`{*}`}占位符）：</Text>
@@ -53,7 +56,7 @@ export default function TemplateView() {
       <div style={{ maxHeight: "calc(100vh - 300px)", overflow: "auto" }}>
         {data.rows.map((row, i) => (
           <Paragraph key={i} style={{ marginBottom: 4, padding: "4px 8px", background: i % 2 === 0 ? "#fafafa" : "#fff" }}>
-            {renderTemplate(row)}
+            {renderTemplate(row, data.columns, templateString)}
           </Paragraph>
         ))}
       </div>

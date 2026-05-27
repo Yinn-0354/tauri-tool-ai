@@ -13,6 +13,11 @@ const typeLabels: Record<string, string> = {
   db: "数据库",
 };
 
+const panelHeaderStyle: React.CSSProperties = {
+  padding: "12px 16px",
+  borderBottom: "1px solid #f0f0f0",
+};
+
 interface Props {
   selectedId: string | null;
   onSelect: (source: TableSource) => void;
@@ -51,7 +56,7 @@ export default function SourcePanel({ selectedId, onSelect }: Props) {
 
   return (
     <div style={{ display: "flex", flexDirection: "column", height: "100%" }}>
-      <div style={{ padding: "12px 16px", borderBottom: "1px solid #f0f0f0" }}>
+      <div style={panelHeaderStyle}>
         <Space>
           <Button type="primary" icon={<PlusOutlined />} onClick={() => setModalOpen(true)}>
             添加
