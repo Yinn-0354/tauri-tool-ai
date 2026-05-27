@@ -60,6 +60,14 @@ class AddSourceRequest(BaseModel):
     name: str
     type: str   # file / wps / db
     path: str
+    headerRow: int = 1
+    skipRows: list[int] = []
+
+
+class UpdateSourceRequest(BaseModel):
+    name: str | None = None
+    headerRow: int | None = None
+    skipRows: list[int] | None = None
 
 
 class LoadTableRequest(BaseModel):
@@ -84,6 +92,8 @@ async def add_source(req: AddSourceRequest):
         "name": req.name,
         "type": req.type,
         "path": req.path,
+        "headerRow": req.headerRow,
+        "skipRows": req.skipRows,
         "addedAt": time.strftime("%Y-%m-%dT%H:%M:%S"),
     }
     sources.append(source)
@@ -103,6 +113,23 @@ async def delete_source(source_id: str):
     return {"ok": True}
 
 
+@app.put("/api/table/sources/{source_id}")
+async def update_source(source_id: str, req: UpdateSourceRequest):
+    """更新数据源配置（名称、表头行、跳过行等）"""
+    sources = _load_sources()
+    for s in sources:
+        if s["id"] == source_id:
+            if req.name is not None:
+                s["name"] = req.name
+            if req.headerRow is not None:
+                s["headerRow"] = req.headerRow
+            if req.skipRows is not None:
+                s["skipRows"] = req.skipRows
+            _save_sources(sources)
+            return s
+    raise HTTPException(404, "数据源不存在")
+
+
 # ─── 加载与查询 ────────────────────────────────────────────────
 
 @app.post("/api/table/load")
@@ -120,13 +147,15 @@ async def load_table(req: LoadTableRequest):
 
     table_id = uuid.uuid4().hex[:8]
     ext = path.lower()
+    header_row = source.get("headerRow", 1)
+    skip_rows = source.get("skipRows", [])
 
     if source["type"] == "file" and ext.endswith((".xlsx", ".xls", ".xlsm", ".xltx")):
-        result = read_excel_preview(path, req.sheet)
+        result = read_excel_preview(path, req.sheet, header_row, skip_rows)
     elif source["type"] == "file" and ext.endswith(".csv"):
-        result = read_csv(path)
+        result = read_csv(path, header_row, skip_rows)
     elif source["type"] == "file" and ext.endswith((".tab", ".tsv", ".txt")):
-        result = read_tab(path)
+        result = read_tab(path, header_row, skip_rows)
     else:
         raise HTTPException(400, f"不支持的文件格式: {Path(path).suffix}")
 
