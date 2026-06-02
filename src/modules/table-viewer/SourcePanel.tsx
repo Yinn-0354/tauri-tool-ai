@@ -1,21 +1,24 @@
 import { useEffect, useState } from "react";
-import { List, Button, Popconfirm, Typography, Space, message } from "antd";
-import { PlusOutlined, ReloadOutlined, DeleteOutlined } from "@ant-design/icons";
+import { List, Button, Popconfirm, Typography, Tag, Tooltip, message } from "antd";
+import {
+  PlusOutlined,
+  ReloadOutlined,
+  DeleteOutlined,
+  EditOutlined,
+  FileExcelOutlined,
+  DatabaseOutlined,
+  CloudOutlined,
+} from "@ant-design/icons";
 import type { TableSource } from "@/api/table";
 import { fetchSources, deleteSource } from "@/api/table";
 import AddSourceModal from "./AddSourceModal";
 
 const { Text } = Typography;
 
-const typeLabels: Record<string, string> = {
-  file: "文件",
-  wps: "WPS",
-  db: "数据库",
-};
-
-const panelHeaderStyle: React.CSSProperties = {
-  padding: "12px 16px",
-  borderBottom: "1px solid #f0f0f0",
+const typeConfig: Record<string, { label: string; color: string; icon: React.ReactNode }> = {
+  file: { label: "文件", color: "green", icon: <FileExcelOutlined /> },
+  wps: { label: "WPS", color: "blue", icon: <CloudOutlined /> },
+  db: { label: "数据库", color: "purple", icon: <DatabaseOutlined /> },
 };
 
 interface Props {
@@ -27,6 +30,7 @@ export default function SourcePanel({ selectedId, onSelect }: Props) {
   const [sources, setSources] = useState<TableSource[]>([]);
   const [modalOpen, setModalOpen] = useState(false);
   const [loading, setLoading] = useState(false);
+  const [editingSource, setEditingSource] = useState<TableSource | null>(null);
 
   const loadSources = async () => {
     setLoading(true);
@@ -54,15 +58,50 @@ export default function SourcePanel({ selectedId, onSelect }: Props) {
     }
   };
 
+  const openEditModal = (item: TableSource, e: React.MouseEvent) => {
+    e.stopPropagation();
+    setEditingSource(item);
+    setModalOpen(true);
+  };
+
   return (
-    <div style={{ display: "flex", flexDirection: "column", height: "100%" }}>
-      <div style={panelHeaderStyle}>
-        <Space>
-          <Button type="primary" icon={<PlusOutlined />} onClick={() => setModalOpen(true)}>
+    <div className="source-panel" style={{ display: "flex", flexDirection: "column", height: "100%" }}>
+      <style>{`
+        .source-panel .ant-list-item {
+          transition: background 0.15s ease;
+        }
+        .source-panel .ant-list-item:hover {
+          background: #dce8fd;
+        }
+      `}</style>
+      <div
+        style={{
+          padding: "12px 16px",
+          borderBottom: "1px solid #f0f0f0",
+          display: "flex",
+          justifyContent: "space-between",
+          alignItems: "center",
+        }}
+      >
+        <Text strong>数据源</Text>
+        <div>
+          <Button
+            type="text"
+            size="small"
+            icon={<ReloadOutlined />}
+            onClick={loadSources}
+            loading={loading}
+            style={{ marginRight: 4 }}
+          />
+          <Button
+            type="primary"
+            size="small"
+            icon={<PlusOutlined />}
+            onClick={() => setModalOpen(true)}
+          >
             添加
           </Button>
-          <Button icon={<ReloadOutlined />} onClick={loadSources} loading={loading} />
-        </Space>
+        </div>
       </div>
 
       <div style={{ flex: 1, overflow: "auto" }}>
@@ -70,58 +109,90 @@ export default function SourcePanel({ selectedId, onSelect }: Props) {
           size="small"
           loading={loading}
           dataSource={sources}
-          renderItem={(item) => (
-            <List.Item
-              style={{
-                cursor: "pointer",
-                padding: "8px 16px",
-                background: selectedId === item.id ? "#e6f4ff" : undefined,
-              }}
-              onClick={() => onSelect(item)}
-              actions={[
-                <Popconfirm
-                  title="确定删除？"
-                  onConfirm={(e) => {
-                    e?.stopPropagation();
-                    handleDelete(item.id);
-                  }}
-                  onCancel={(e) => e?.stopPropagation()}
-                  key="del"
+          renderItem={(item) => {
+            const cfg = typeConfig[item.type] ?? { label: item.type, color: "default", icon: null };
+            const isSelected = selectedId === item.id;
+            const displayName = item.alias || item.name;
+
+            return (
+              <List.Item
+                style={{
+                  cursor: "pointer",
+                  padding: "10px 8px 10px 16px",
+                  background: isSelected ? "#e6f4ff" : undefined,
+                  borderLeft: isSelected ? "3px solid #1677ff" : "3px solid transparent",
+                  display: "flex",
+                  alignItems: "flex-start",
+                }}
+                onClick={() => onSelect(item)}
+              >
+                <div style={{ flex: 1, minWidth: 0 }}>
+                  <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                    <Text strong={isSelected} ellipsis style={{ flex: 1 }}>
+                      {displayName}
+                    </Text>
+                    <Tag color={cfg.color} icon={cfg.icon} style={{ margin: 0, fontSize: 11, flexShrink: 0 }}>
+                      {cfg.label}
+                    </Tag>
+                  </div>
+                  <Tooltip title={item.path} placement="topLeft">
+                    <Text
+                      type="secondary"
+                      style={{ fontSize: 12, display: "block" }}
+                      ellipsis
+                    >
+                      {item.path}
+                    </Text>
+                  </Tooltip>
+                </div>
+                <div
+                  style={{ flexShrink: 0, display: "flex", flexDirection: "column", marginLeft: 4 }}
+                  onClick={(e) => e.stopPropagation()}
                 >
                   <Button
                     type="text"
                     size="small"
-                    danger
-                    icon={<DeleteOutlined />}
-                    onClick={(e) => e.stopPropagation()}
+                    icon={<EditOutlined />}
+                    onClick={(e) => openEditModal(item, e)}
                   />
-                </Popconfirm>,
-              ]}
-            >
-              <List.Item.Meta
-                title={<Text strong={selectedId === item.id}>{item.name}</Text>}
-                description={
-                  <Space size={4}>
-                    <Text type="secondary" style={{ fontSize: 12 }}>
-                      {typeLabels[item.type] ?? item.type}
-                    </Text>
-                    <Text type="secondary" style={{ fontSize: 12 }} ellipsis>
-                      {item.path}
-                    </Text>
-                  </Space>
-                }
-              />
-            </List.Item>
-          )}
+                  <Popconfirm
+                    title="确定删除？"
+                    onConfirm={(e) => {
+                      e?.stopPropagation();
+                      handleDelete(item.id);
+                    }}
+                    onCancel={(e) => e?.stopPropagation()}
+                  >
+                    <Button
+                      type="text"
+                      size="small"
+                      danger
+                      icon={<DeleteOutlined />}
+                      onClick={(e) => e.stopPropagation()}
+                    />
+                  </Popconfirm>
+                </div>
+              </List.Item>
+            );
+          }}
         />
       </div>
 
       <AddSourceModal
         open={modalOpen}
-        onClose={() => setModalOpen(false)}
+        onClose={() => {
+          setModalOpen(false);
+          setEditingSource(null);
+        }}
+        editingSource={editingSource}
         onAdded={(source) => {
           setSources((prev) => [...prev, source]);
           setModalOpen(false);
+        }}
+        onUpdated={(source) => {
+          setSources((prev) => prev.map((s) => (s.id === source.id ? source : s)));
+          setModalOpen(false);
+          setEditingSource(null);
         }}
       />
     </div>

@@ -5,6 +5,7 @@ export interface TableSource {
   name: string;
   type: "file" | "wps" | "db";
   path: string;
+  alias?: string;
   headerRow?: number;
   skipRows?: number[];
   addedAt: string;
@@ -35,6 +36,7 @@ export async function addSource(
   name: string,
   type: string,
   path: string,
+  alias = "",
   headerRow = 1,
   skipRows: number[] = [],
 ): Promise<TableSource> {
@@ -42,6 +44,7 @@ export async function addSource(
     name,
     type,
     path,
+    alias,
     headerRow,
     skipRows,
   });
@@ -50,7 +53,7 @@ export async function addSource(
 
 export async function updateSource(
   id: string,
-  data: { name?: string; headerRow?: number; skipRows?: number[] },
+  data: { name?: string; alias?: string; headerRow?: number; skipRows?: number[] },
 ): Promise<TableSource> {
   const res = await apiClient.put(`/api/table/sources/${id}`, data);
   return res.data;

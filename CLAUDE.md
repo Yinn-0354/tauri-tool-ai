@@ -61,4 +61,4 @@ cargo tauri --version
 
 ## 项目状态
 
-项目处于 **Phase 3 完成**（表格查看器功能完整）。Phase 1 实现细节见 `docs/ecc/2026-05-13-tauri-tool-ai-phase1.md`，Phase 2 见 `docs/ecc/2026-05-13-tauri-tool-ai-phase2.md`，实施计划见 `docs/ecc/2026-05-12-tauri-tool-ai-plan.md`。
+项目处于 **Phase 3 进行中**（表格查看器功能完善中）。Phase 1 实现细节见 `docs/ecc/2026-05-13-tauri-tool-ai-phase1.md`，Phase 2 见 `docs/ecc/2026-05-13-tauri-tool-ai-phase2.md`，实施计划见 `docs/ecc/2026-05-12-tauri-tool-ai-plan.md`。

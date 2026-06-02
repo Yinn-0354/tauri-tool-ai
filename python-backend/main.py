@@ -60,12 +60,14 @@ class AddSourceRequest(BaseModel):
     name: str
     type: str   # file / wps / db
     path: str
+    alias: str = ""
     headerRow: int = 1
     skipRows: list[int] = []
 
 
 class UpdateSourceRequest(BaseModel):
     name: str | None = None
+    alias: str | None = None
     headerRow: int | None = None
     skipRows: list[int] | None = None
 
@@ -92,6 +94,7 @@ async def add_source(req: AddSourceRequest):
         "name": req.name,
         "type": req.type,
         "path": req.path,
+        "alias": req.alias,
         "headerRow": req.headerRow,
         "skipRows": req.skipRows,
         "addedAt": time.strftime("%Y-%m-%dT%H:%M:%S"),
@@ -121,6 +124,8 @@ async def update_source(source_id: str, req: UpdateSourceRequest):
         if s["id"] == source_id:
             if req.name is not None:
                 s["name"] = req.name
+            if req.alias is not None:
+                s["alias"] = req.alias
             if req.headerRow is not None:
                 s["headerRow"] = req.headerRow
             if req.skipRows is not None:
@@ -181,7 +186,7 @@ async def load_table(req: LoadTableRequest):
 async def table_data(
     table_id: str,
     page: int = Query(1, ge=1),
-    pageSize: int = Query(100, ge=1, le=1000),
+    pageSize: int = Query(100, ge=1, le=10000),
 ):
     """分页获取表格数据"""
     table = loaded_tables.get(table_id)

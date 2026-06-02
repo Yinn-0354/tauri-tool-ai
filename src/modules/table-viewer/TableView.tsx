@@ -76,12 +76,14 @@ export default function TableView() {
   const scrollY = tableHeight > 56 ? tableHeight - 56 : 0;
 
   return (
-    <div ref={measureRef} style={{ height: "100%" }}>
+    <div ref={measureRef} style={{ height: "100%", maxHeight: "calc(100vh - 200px)" }}>
       <Table
         columns={columns}
         dataSource={dataSource}
         rowKey="_key"
         size="small"
+        bordered
+        tableLayout="fixed"
         scroll={{ x: "max-content", y: scrollY }}
         pagination={{
           current: page,

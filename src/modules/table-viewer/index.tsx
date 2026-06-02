@@ -30,7 +30,7 @@ const toolbarStyle: React.CSSProperties = {
 
 const viewAreaStyle: React.CSSProperties = {
   flex: 1,
-  padding: "12px 16px",
+  padding: "8px 16px",
   minHeight: 0,
 };
 
@@ -116,8 +116,8 @@ export default function TableViewerModule() {
           )}
         </div>
 
-        {/* 数据源配置编辑条 */}
-        {currentTable && (
+        {/* 数据源配置编辑条 — 仅表格模式 */}
+        {currentTable && viewMode === "table" && (
           <div
             style={{
               flexShrink: 0,
