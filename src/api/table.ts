@@ -22,8 +22,15 @@ export interface TableData {
   columns: string[];
   rows: unknown[][];
   total: number;
+  filteredTotal: number;
   page: number;
   pageSize: number;
+}
+
+export interface ColumnFilter {
+  column: string;
+  op: "eq" | "ne" | "contains" | "gt" | "lt" | "gte" | "lte" | "in" | "between";
+  value: unknown;
 }
 
 // 数据源 CRUD
@@ -76,9 +83,15 @@ export async function fetchData(
   tableId: string,
   page = 1,
   pageSize = 100,
+  sortCol?: string,
+  sortOrder?: "asc" | "desc",
+  filters?: ColumnFilter[],
 ): Promise<TableData> {
-  const res = await apiClient.get(`/api/table/data/${tableId}`, {
-    params: { page, pageSize },
-  });
+  const params: Record<string, unknown> = { page, pageSize };
+  if (sortCol) params.sortCol = sortCol;
+  if (sortOrder) params.sortOrder = sortOrder;
+  if (filters && filters.length > 0) params.filters = JSON.stringify(filters);
+
+  const res = await apiClient.get(`/api/table/data/${tableId}`, { params });
   return res.data;
 }

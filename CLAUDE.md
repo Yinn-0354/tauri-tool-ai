@@ -59,6 +59,10 @@ cargo tauri --version
 - **大表格处理**: 先使用 Ant Design Table 标准组件，后续按需引入 react-window 虚拟滚动
 - **自动更新**: Tauri Updater 插件 + GitLab CI 构建 `.msi` + 更新清单 JSON
 
+## 已知待办
+
+- [ ] Ant Design 6 的 `List` 组件已废弃，官方将用 `Listy` 组件替代，目前 `Listy` 仍在测试中未上线。等正式发布后替换 `SourcePanel.tsx` 中的 `List` 用法。
+
 ## 项目状态
 
 项目处于 **Phase 3 进行中**（表格查看器功能完善中）。Phase 1 实现细节见 `docs/ecc/2026-05-13-tauri-tool-ai-phase1.md`，Phase 2 见 `docs/ecc/2026-05-13-tauri-tool-ai-phase2.md`，实施计划见 `docs/ecc/2026-05-12-tauri-tool-ai-plan.md`。

@@ -1,61 +1,41 @@
-"""Excel 读取器 — 使用 openpyxl"""
+"""Excel 读取器 — 使用 pandas + openpyxl"""
 
-from pathlib import Path
-from openpyxl import load_workbook
+import pandas as pd
 
 
-def read_excel(
+def read_excel_df(
     path: str,
     sheet: str | None = None,
     header_row: int = 1,
     skip_rows: list[int] | None = None,
-) -> dict:
-    """读取 Excel 文件，返回 { sheet_name: { columns: [...], rows: [[], ...] } }
+) -> pd.DataFrame:
+    """读取 Excel 文件，返回 DataFrame
 
     header_row: 表头行号（1-indexed）
     skip_rows: 需要跳过的行号列表（1-indexed）
     """
-    if skip_rows is None:
-        skip_rows = []
-
-    skip_set = {r - 1 for r in skip_rows}
+    # pandas 的 header 是 0-indexed
     header_idx = header_row - 1
 
-    wb = load_workbook(path, read_only=True, data_only=True)
-    result = {}
+    # skiprows: pandas 接受 0-indexed 行号列表
+    pandas_skip: list[int] = []
+    if skip_rows:
+        pandas_skip = [r - 1 for r in skip_rows]
+        # 确保不跳过表头行
+        if header_idx in pandas_skip:
+            pandas_skip.remove(header_idx)
 
-    sheets = [sheet] if sheet else wb.sheetnames
-    for name in sheets:
-        ws = wb[name]
-        rows_iter = ws.iter_rows(values_only=True)
+    df = pd.read_excel(
+        path,
+        sheet_name=sheet or 0,
+        header=header_idx,
+        skiprows=pandas_skip or None,
+        engine="openpyxl",
+        dtype=str,       # 全部读为字符串，避免类型推断问题
+        na_filter=False,  # 空值读为空字符串而非 NaN
+    )
 
-        columns: list[str] = []
-        data_rows: list[list] = []
+    # 列名去空，统一为字符串
+    df.columns = [str(c) if c else f"Col{i}" for i, c in enumerate(df.columns, 1)]
 
-        for i, row in enumerate(rows_iter):
-            if i in skip_set:
-                continue
-            if i == header_idx:
-                columns = [
-                    str(c) if c else f"Col{j}"
-                    for j, c in enumerate(row, 1)
-                ]
-            elif columns:
-                data_rows.append([v for v in row])
-
-        result[name] = {"columns": columns, "rows": data_rows}
-
-    wb.close()
-    return result
-
-
-def read_excel_preview(
-    path: str,
-    sheet: str | None = None,
-    header_row: int = 1,
-    skip_rows: list[int] | None = None,
-) -> dict:
-    """读取 Excel 并汇总成一个表格（单 sheet 模式）"""
-    data = read_excel(path, sheet, header_row, skip_rows)
-    first_sheet = list(data.values())[0] if data else {"columns": [], "rows": []}
-    return first_sheet
+    return df

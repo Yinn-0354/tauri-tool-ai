@@ -12,7 +12,7 @@ const wrapperStyle: React.CSSProperties = {
 export default function Loading(props: SpinProps) {
   return (
     <div style={wrapperStyle}>
-      <Spin tip="加载中..." {...props} />
+      <Spin description="加载中..." {...props} />
     </div>
   );
 }

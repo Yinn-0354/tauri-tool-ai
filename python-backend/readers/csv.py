@@ -1,70 +1,72 @@
-"""CSV / TSV 读取器"""
+"""CSV / TSV 读取器 — 使用 pandas"""
 
-import csv
-from pathlib import Path
+import pandas as pd
 
 ENCODINGS = ["utf-8", "gbk", "gb2312", "utf-16"]
 
 
-def _read_delimited(
+def _detect_encoding(path: str) -> str:
+    """自动检测文件编码"""
+    raw = open(path, "rb").read()
+    for enc in ENCODINGS:
+        try:
+            raw.decode(enc)
+            return enc
+        except UnicodeDecodeError:
+            continue
+    return "utf-8"
+
+
+def _read_delimited_df(
     path: str,
     delimiter: str,
     header_row: int = 1,
     skip_rows: list[int] | None = None,
-) -> dict:
-    """读取分隔符文本文件，自动尝试多种编码
+) -> pd.DataFrame:
+    """读取分隔符文本文件，返回 DataFrame
 
     header_row: 表头行号（1-indexed）
     skip_rows: 需要跳过的行号列表（1-indexed）
     """
-    if skip_rows is None:
-        skip_rows = []
-
-    skip_set = {r - 1 for r in skip_rows}
     header_idx = header_row - 1
 
-    raw = Path(path).read_bytes()
-    for enc in ENCODINGS:
-        try:
-            content = raw.decode(enc)
-            break
-        except UnicodeDecodeError:
-            continue
-    else:
-        content = raw.decode("utf-8", errors="replace")
+    pandas_skip: list[int] = []
+    if skip_rows:
+        pandas_skip = [r - 1 for r in skip_rows]
+        if header_idx in pandas_skip:
+            pandas_skip.remove(header_idx)
 
-    reader = csv.reader(content.splitlines(), delimiter=delimiter)
-    all_rows = [row for row in reader]
+    encoding = _detect_encoding(path)
 
-    if header_idx < len(all_rows):
-        columns = [
-            str(c) if c else f"Col{i}"
-            for i, c in enumerate(all_rows[header_idx], 1)
-        ]
-    else:
-        columns = []
+    df = pd.read_csv(
+        path,
+        delimiter=delimiter,
+        header=header_idx,
+        skiprows=pandas_skip or None,
+        encoding=encoding,
+        dtype=str,
+        na_filter=False,
+        engine="python",
+    )
 
-    rows = [
-        row for i, row in enumerate(all_rows)
-        if i != header_idx and i not in skip_set and i > header_idx
-    ]
+    df.columns = [str(c) if c else f"Col{i}" for i, c in enumerate(df.columns, 1)]
 
-    return {"columns": columns, "rows": rows}
+    return df
 
 
-def read_csv(
+def read_csv_df(
     path: str,
     header_row: int = 1,
     skip_rows: list[int] | None = None,
-) -> dict:
+) -> pd.DataFrame:
     """读取 CSV 文件（逗号分隔）"""
-    return _read_delimited(path, ",", header_row, skip_rows)
+    return _read_delimited_df(path, ",", header_row, skip_rows)
 
 
-def read_tab(
+def read_tab_df(
     path: str,
     header_row: int = 1,
     skip_rows: list[int] | None = None,
-) -> dict:
+) -> pd.DataFrame:
     """读取 TAB / TSV 文件（Tab 分隔）"""
-    return _read_delimited(path, "\t", header_row, skip_rows)
+    return _read_delimited_df(path, "\t", header_row, skip_rows)
