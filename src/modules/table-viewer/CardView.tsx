@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useState, useMemo } from "react";
 import { Card, Select, Row, Col, Typography, message } from "antd";
 import type { TableData } from "@/api/table";
 import { fetchData } from "@/api/table";
@@ -25,19 +25,23 @@ export default function CardView() {
       .finally(() => setLoading(false));
   }, [currentTable]);
 
+  // 按指定列分组 — useMemo 缓存避免每次渲染重新计算（hooks 必须在 early return 之前）
+  const { groupCol, groups } = useMemo(() => {
+    if (!data) return { groupCol: "", groups: new Map<string, unknown[][]>() };
+    const col = groupByColumn || data.columns[0];
+    const idx = data.columns.indexOf(col);
+    const map = new Map<string, unknown[][]>();
+    data.rows.forEach((row) => {
+      const key = String(row[idx] ?? "(空)");
+      if (!map.has(key)) map.set(key, []);
+      map.get(key)!.push(row);
+    });
+    return { groupCol: col, groups: map };
+  }, [data, groupByColumn]);
+
   if (!currentTable) return <Empty description="请先选择数据源并加载" />;
   if (loading) return <Loading />;
   if (!data) return <Empty />;
-
-  // 按指定列分组
-  const groupCol = groupByColumn || data.columns[0];
-  const groupIdx = data.columns.indexOf(groupCol);
-  const groups = new Map<string, unknown[][]>();
-  data.rows.forEach((row) => {
-    const key = String(row[groupIdx] ?? "(空)");
-    if (!groups.has(key)) groups.set(key, []);
-    groups.get(key)!.push(row);
-  });
 
   return (
     <div>

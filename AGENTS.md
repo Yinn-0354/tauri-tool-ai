@@ -1,6 +1,6 @@
-# CLAUDE.md
+# AGENTS.md
 
-This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+This file provides guidance to Codex (Codex.ai/code) when working with code in this repository.
 
 ## 项目概况
 
@@ -35,30 +35,21 @@ Tauri 桌面壳 (Rust)
 └── Rust 层: 窗口管理、自动更新、系统托盘
 ```
 
-## 常用命令
+## 常用命令（规划）
 
 ```bash
-# 开发模式（推荐，自动启动桌面窗口 + 前端 + Python 后端）
-cargo tauri dev
-
-# 仅前端开发（不启动桌面窗口）
-npm run dev
+# 开发模式
+npm run dev          # 或 cargo tauri dev
 
 # 构建
 npm run build        # 或 cargo tauri build
 
-# Python 后端（通常由 cargo tauri dev 自动启动）
+# Python 后端
 cd python-backend && pip install -r requirements.txt && python main.py
 
 # 验证
 cargo tauri --version
 ```
-
-### 开发环境说明
-- **推荐使用 `cargo tauri dev`**：自动启动 Tauri 桌面窗口、Vite 前端开发服务器和 Python FastAPI 后端
-- 该命令会先运行 `BeforeDevCommand`（npm run dev）启动前端，然后运行 `DevCommand` 编译并启动 Rust 桌面应用
-- Python 后端会随桌面应用自动启动，端口随机分配
-- 支持热重载：修改前端/后端代码后自动刷新，修改 Rust 代码后自动重新编译
 
 ## 关键架构决策
 

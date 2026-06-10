@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState, useCallback } from "react";
 import { List, Button, Popconfirm, Typography, Tag, Tooltip, message } from "antd";
 import {
   PlusOutlined,
@@ -11,6 +11,7 @@ import {
 } from "@ant-design/icons";
 import type { TableSource } from "@/api/table";
 import { fetchSources, deleteSource } from "@/api/table";
+import { useTableViewerStore } from "@/stores/tableViewerStore";
 import AddSourceModal from "./AddSourceModal";
 
 const { Text } = Typography;
@@ -24,15 +25,19 @@ const typeConfig: Record<string, { label: string; color: string; icon: React.Rea
 interface Props {
   selectedId: string | null;
   onSelect: (source: TableSource) => void;
+  /** Modal 编辑数据源后通知父组件同步工具栏配置 */
+  onSourceUpdated?: (source: TableSource) => void;
 }
 
-export default function SourcePanel({ selectedId, onSelect }: Props) {
+export default function SourcePanel({ selectedId, onSelect, onSourceUpdated }: Props) {
+  const storeSelectedSource = useTableViewerStore((s) => s.selectedSource);
   const [sources, setSources] = useState<TableSource[]>([]);
   const [modalOpen, setModalOpen] = useState(false);
   const [loading, setLoading] = useState(false);
   const [editingSource, setEditingSource] = useState<TableSource | null>(null);
+  const prevSelectedRef = useRef<TableSource | null>(null);
 
-  const loadSources = async () => {
+  const loadSources = useCallback(async () => {
     setLoading(true);
     try {
       const list = await fetchSources();
@@ -42,11 +47,19 @@ export default function SourcePanel({ selectedId, onSelect }: Props) {
     } finally {
       setLoading(false);
     }
-  };
+  }, []);
 
   useEffect(() => {
     loadSources();
-  }, []);
+  }, [loadSources]);
+
+  // 工具栏更新数据源后，同步到本地列表（store 引用变化时触发）
+  useEffect(() => {
+    if (storeSelectedSource && storeSelectedSource !== prevSelectedRef.current) {
+      prevSelectedRef.current = storeSelectedSource;
+      setSources((prev) => prev.map((s) => (s.id === storeSelectedSource.id ? storeSelectedSource : s)));
+    }
+  }, [storeSelectedSource]);
 
   const handleDelete = async (id: string) => {
     try {
@@ -66,14 +79,6 @@ export default function SourcePanel({ selectedId, onSelect }: Props) {
 
   return (
     <div className="source-panel" style={{ display: "flex", flexDirection: "column", height: "100%" }}>
-      <style>{`
-        .source-panel .ant-list-item {
-          transition: background 0.15s ease;
-        }
-        .source-panel .ant-list-item:hover {
-          background: #dce8fd;
-        }
-      `}</style>
       <div
         style={{
           padding: "12px 16px",
@@ -193,6 +198,7 @@ export default function SourcePanel({ selectedId, onSelect }: Props) {
           setSources((prev) => prev.map((s) => (s.id === source.id ? source : s)));
           setModalOpen(false);
           setEditingSource(null);
+          onSourceUpdated?.(source);
         }}
       />
     </div>

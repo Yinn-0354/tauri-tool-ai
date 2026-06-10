@@ -8,6 +8,7 @@ export interface TableSource {
   alias?: string;
   headerRow?: number;
   skipRows?: number[];
+  remarkRows?: number[];
   addedAt: string;
 }
 
@@ -16,6 +17,12 @@ export interface TableMeta {
   sourceId: string;
   columns: string[];
   totalRows: number;
+  remarkData?: RemarkData[];
+}
+
+export interface RemarkData {
+  row: number;
+  values: string[];
 }
 
 export interface TableData {
@@ -25,6 +32,7 @@ export interface TableData {
   filteredTotal: number;
   page: number;
   pageSize: number;
+  remarkData?: RemarkData[];
 }
 
 export interface ColumnFilter {
@@ -46,6 +54,7 @@ export async function addSource(
   alias = "",
   headerRow = 1,
   skipRows: number[] = [],
+  remarkRows: number[] = [],
 ): Promise<TableSource> {
   const res = await apiClient.post("/api/table/sources", {
     name,
@@ -54,13 +63,14 @@ export async function addSource(
     alias,
     headerRow,
     skipRows,
+    remarkRows,
   });
   return res.data;
 }
 
 export async function updateSource(
   id: string,
-  data: { name?: string; alias?: string; headerRow?: number; skipRows?: number[] },
+  data: { name?: string; alias?: string; headerRow?: number; skipRows?: number[]; remarkRows?: number[] },
 ): Promise<TableSource> {
   const res = await apiClient.put(`/api/table/sources/${id}`, data);
   return res.data;

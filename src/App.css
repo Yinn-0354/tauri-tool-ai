@@ -8,3 +8,11 @@ body {
   height: 100vh;
   overflow: hidden;
 }
+
+/* SourcePanel 列表项交互样式 */
+.source-panel .ant-list-item {
+  transition: background 0.15s ease;
+}
+.source-panel .ant-list-item:hover {
+  background: #dce8fd;
+}

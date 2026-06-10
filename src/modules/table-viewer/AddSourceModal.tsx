@@ -35,6 +35,7 @@ export default function AddSourceModal({ open, onClose, onAdded, editingSource, 
         path: editingSource.path,
         headerRow: editingSource.headerRow ?? 1,
         skipRows: (editingSource.skipRows ?? []).map(String),
+        remarkRows: (editingSource.remarkRows ?? []).map(String),
       });
     } else if (open) {
       form.resetFields();
@@ -61,6 +62,7 @@ export default function AddSourceModal({ open, onClose, onAdded, editingSource, 
           alias: values.alias ?? "",
           headerRow: values.headerRow ?? 1,
           skipRows: (values.skipRows ?? []).map(Number),
+          remarkRows: (values.remarkRows ?? []).map(Number),
         });
         message.success("数据源已更新");
         onUpdated?.(updated as unknown as TableSource);
@@ -72,6 +74,7 @@ export default function AddSourceModal({ open, onClose, onAdded, editingSource, 
           values.alias ?? "",
           values.headerRow ?? 1,
           (values.skipRows ?? []).map(Number),
+          (values.remarkRows ?? []).map(Number),
         );
         message.success("数据源已添加");
         onAdded(source as unknown as TableSource);
@@ -110,7 +113,7 @@ export default function AddSourceModal({ open, onClose, onAdded, editingSource, 
       <Form
         form={form}
         layout="vertical"
-        initialValues={{ type: "file", headerRow: 1, skipRows: [] }}
+        initialValues={{ type: "file", headerRow: 1, skipRows: [], remarkRows: [] }}
       >
         <Form.Item name="type" label="类型" rules={[{ required: true }]}>
           <Select options={SOURCE_TYPE_OPTIONS} disabled={isEdit} />

@@ -63,6 +63,7 @@ class AddSourceRequest(BaseModel):
     alias: str = ""
     headerRow: int = 1
     skipRows: list[int] = []
+    remarkRows: list[int] = []
 
 
 class UpdateSourceRequest(BaseModel):
@@ -70,6 +71,7 @@ class UpdateSourceRequest(BaseModel):
     alias: str | None = None
     headerRow: int | None = None
     skipRows: list[int] | None = None
+    remarkRows: list[int] | None = None
 
 
 class LoadTableRequest(BaseModel):
@@ -103,6 +105,7 @@ async def add_source(req: AddSourceRequest):
         "alias": req.alias,
         "headerRow": req.headerRow,
         "skipRows": req.skipRows,
+        "remarkRows": req.remarkRows,
         "addedAt": time.strftime("%Y-%m-%dT%H:%M:%S"),
     }
     sources.append(source)
@@ -136,6 +139,8 @@ async def update_source(source_id: str, req: UpdateSourceRequest):
                 s["headerRow"] = req.headerRow
             if req.skipRows is not None:
                 s["skipRows"] = req.skipRows
+            if req.remarkRows is not None:
+                s["remarkRows"] = req.remarkRows
             _save_sources(sources)
             return s
     raise HTTPException(404, "数据源不存在")
@@ -160,14 +165,15 @@ async def load_table(req: LoadTableRequest):
     ext = path.lower()
     header_row = source.get("headerRow", 1)
     skip_rows = source.get("skipRows", [])
+    remark_rows = source.get("remarkRows", [])
 
     try:
         if source["type"] == "file" and ext.endswith((".xlsx", ".xls", ".xlsm", ".xltx")):
-            df = read_excel_df(path, req.sheet, header_row, skip_rows)
+            df, remark_data = read_excel_df(path, req.sheet, header_row, skip_rows, remark_rows)
         elif source["type"] == "file" and ext.endswith(".csv"):
-            df = read_csv_df(path, header_row, skip_rows)
+            df, remark_data = read_csv_df(path, header_row, skip_rows, remark_rows)
         elif source["type"] == "file" and ext.endswith((".tab", ".tsv", ".txt")):
-            df = read_tab_df(path, header_row, skip_rows)
+            df, remark_data = read_tab_df(path, header_row, skip_rows, remark_rows)
         else:
             raise HTTPException(400, f"不支持的文件格式: {Path(path).suffix}")
     except Exception as e:
@@ -179,6 +185,7 @@ async def load_table(req: LoadTableRequest):
         "sourceId": req.sourceId,
         "df": df,
         "columns": columns,
+        "remarkData": remark_data,
     }
 
     return {
@@ -186,6 +193,7 @@ async def load_table(req: LoadTableRequest):
         "sourceId": req.sourceId,
         "columns": columns,
         "totalRows": len(df),
+        "remarkData": remark_data,
     }
 
 
@@ -274,6 +282,7 @@ async def table_data(
         "filteredTotal": filtered_total,
         "page": page,
         "pageSize": pageSize,
+        "remarkData": table.get("remarkData", []),
     }
 
 

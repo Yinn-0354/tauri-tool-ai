@@ -37,8 +37,10 @@ const tabsStyle: React.CSSProperties = {
 
 const contentStyle: React.CSSProperties = {
   flex: 1,
-  overflow: "auto",
+  overflow: "hidden",
   background: "#f5f5f5",
+  minHeight: 0,
+  position: "relative",
 };
 
 export default function AppLayout() {
@@ -55,7 +57,7 @@ export default function AppLayout() {
         closable: true,
       });
     }
-  }, [location.pathname]);
+  }, [location.pathname, openTab]);
 
   const currentActive = activeKey || location.pathname;
 
@@ -93,12 +95,11 @@ export default function AppLayout() {
             if (action === "remove" && typeof key === "string") {
               const idx = tabs.findIndex((t) => t.key === key);
               closeTab(key);
-              if (tabs.length > 1) {
-                const nextIdx = Math.min(idx, tabs.length - 2);
-                const nextTab = tabs.filter((t) => t.key !== key)[nextIdx];
-                if (nextTab) {
-                  navigate(nextTab.key);
-                }
+              // 在 closeTab 之后，用过滤后的 tabs 计算下一个标签
+              const remaining = tabs.filter((t) => t.key !== key);
+              if (remaining.length > 0) {
+                const nextIdx = Math.min(idx, remaining.length - 1);
+                navigate(remaining[nextIdx].key);
               }
             }
           }}

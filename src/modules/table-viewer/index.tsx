@@ -35,16 +35,18 @@ const viewAreaStyle: React.CSSProperties = {
 };
 
 export default function TableViewerModule() {
-  const { viewMode, setViewMode, currentTable, setCurrentTable } = useTableViewerStore();
-  const [selectedSource, setSelectedSource] = useState<TableSource | null>(null);
+  const { viewMode, setViewMode, currentTable, setCurrentTable, selectedSource, setSelectedSource } = useTableViewerStore();
   const [loading, setLoading] = useState(false);
   const [editHeaderRow, setEditHeaderRow] = useState(1);
   const [editSkipRows, setEditSkipRows] = useState<number[]>([]);
+  const [editRemarkRows, setEditRemarkRows] = useState<number[]>([]);
 
+  // 切换数据源时，同步配置到 toolbar
   useEffect(() => {
     if (selectedSource) {
       setEditHeaderRow(selectedSource.headerRow ?? 1);
       setEditSkipRows(selectedSource.skipRows ?? []);
+      setEditRemarkRows(selectedSource.remarkRows ?? []);
     }
   }, [selectedSource]);
 
@@ -74,7 +76,9 @@ export default function TableViewerModule() {
       const updated = await updateSource(selectedSource.id, {
         headerRow: editHeaderRow,
         skipRows: editSkipRows,
+        remarkRows: editRemarkRows,
       });
+      // 同步到 store → SourcePanel 通过 watch store 自动同步本地列表
       setSelectedSource(updated as unknown as TableSource);
       const meta = await loadTable(selectedSource.id);
       setCurrentTable(meta as unknown as TableMeta);
@@ -86,15 +90,21 @@ export default function TableViewerModule() {
     }
   };
 
+  // Modal 编辑数据源后，同步到 store selectedSource + toolbar config
+  const handleSourceUpdated = (source: TableSource) => {
+    setSelectedSource(source);
+  };
+
   return (
-    <Layout style={{ height: "100%", background: "#fff" }}>
-      <Sider width={280} theme="light" style={{ borderRight: "1px solid #f0f0f0" }}>
+    <Layout style={{ height: "100%", background: "#fff", overflow: "hidden" }}>
+      <Sider width={280} theme="light" style={{ borderRight: "1px solid #f0f0f0", overflow: "auto" }}>
         <SourcePanel
           selectedId={selectedSource?.id ?? null}
           onSelect={handleSelectSource}
+          onSourceUpdated={handleSourceUpdated}
         />
       </Sider>
-      <Content style={{ display: "flex", flexDirection: "column", overflow: "hidden" }}>
+      <Content style={{ display: "flex", flexDirection: "column", overflow: "hidden", minHeight: 0 }}>
         {/* 工具栏 — 固定在顶部 */}
         <div style={toolbarStyle}>
           <Segmented<ViewMode>
@@ -116,8 +126,8 @@ export default function TableViewerModule() {
           )}
         </div>
 
-        {/* 数据源配置编辑条 — 仅表格模式 */}
-        {currentTable && viewMode === "table" && (
+        {/* 数据源配置编辑条 — 所有视图模式共享 */}
+        {currentTable && selectedSource && (
           <div
             style={{
               flexShrink: 0,
@@ -140,6 +150,18 @@ export default function TableViewerModule() {
                 value={editHeaderRow}
                 onChange={(v) => setEditHeaderRow(v ?? 1)}
                 style={{ width: 70 }}
+              />
+            </Space>
+            <Space size={4}>
+              <Typography.Text style={{ fontSize: 12 }}>备注行</Typography.Text>
+              <Select
+                mode="tags"
+                size="small"
+                tokenSeparators={[","]}
+                placeholder="行号"
+                value={editRemarkRows.map(String)}
+                onChange={(vals) => setEditRemarkRows(vals.map(Number))}
+                style={{ minWidth: 120 }}
               />
             </Space>
             <Space size={4}>

@@ -49,6 +49,14 @@ export default function AddSourceFormFile() {
       <Form.Item name="headerRow" label="表头行" tooltip="表头所在行号，从 1 开始">
         <InputNumber min={1} style={{ width: "100%" }} />
       </Form.Item>
+      <Form.Item name="remarkRows" label="备注行" tooltip="需要作为备注显示的行号，可多选，从 1 开始，显示在表头上方">
+        <Select
+          mode="tags"
+          tokenSeparators={[","]}
+          placeholder="输入行号后回车，如: 1,2,3"
+          style={{ width: "100%" }}
+        />
+      </Form.Item>
       <Form.Item name="skipRows" label="跳过行" tooltip="需要跳过的行号，可多选，从 1 开始">
         <Select
           mode="tags"
