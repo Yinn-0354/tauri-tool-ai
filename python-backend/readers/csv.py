@@ -1,13 +1,16 @@
 """CSV / TSV 读取器 — 使用 pandas"""
 
+import csv
+
 import pandas as pd
 
 ENCODINGS = ["utf-8", "gbk", "gb2312", "utf-16"]
 
 
-def _detect_encoding(path: str) -> str:
-    """自动检测文件编码"""
-    raw = open(path, "rb").read()
+def _detect_encoding(path: str, sample_size: int = 8192) -> str:
+    """仅读取文件头部样本检测编码，避免加载整个文件"""
+    with open(path, "rb") as f:
+        raw = f.read(sample_size)
     for enc in ENCODINGS:
         try:
             raw.decode(enc)
@@ -36,15 +39,30 @@ def _read_delimited_df(
     encoding = _detect_encoding(path)
 
     # 先读取所有行（不指定 header），header=None 表示所有行都是数据
-    raw_df = pd.read_csv(
-        path,
-        delimiter=delimiter,
-        header=None,  # 不指定表头，所有行都作为数据读取
-        encoding=encoding,
-        dtype=str,
-        na_filter=False,
-        engine="python",
-    )
+    # 使用 C 引擎（比 Python 引擎快 10-50 倍），QUOTE_NONE 禁用引号解析避免 TAB 干扰
+    try:
+        raw_df = pd.read_csv(
+            path,
+            delimiter=delimiter,
+            header=None,  # 不指定表头，所有行都作为数据读取
+            encoding=encoding,
+            dtype=str,
+            na_filter=False,
+            engine="c",
+            quoting=csv.QUOTE_NONE,
+            on_bad_lines="skip",
+        )
+    except Exception:
+        # C 引擎失败时回退到 Python 引擎
+        raw_df = pd.read_csv(
+            path,
+            delimiter=delimiter,
+            header=None,
+            encoding=encoding,
+            dtype=str,
+            na_filter=False,
+            engine="python",
+        )
 
     # 检查表头行是否存在
     if header_idx >= len(raw_df):

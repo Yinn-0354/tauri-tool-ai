@@ -1,5 +1,11 @@
 import apiClient from "./client";
 
+export interface ColumnGroupConfig {
+  id: string;
+  title: string;
+  columns: string[];
+}
+
 export interface TableSource {
   id: string;
   name: string;
@@ -9,6 +15,7 @@ export interface TableSource {
   headerRow?: number;
   skipRows?: number[];
   remarkRows?: number[];
+  columnGroups?: ColumnGroupConfig[];
   addedAt: string;
 }
 
@@ -18,6 +25,7 @@ export interface TableMeta {
   columns: string[];
   totalRows: number;
   remarkData?: RemarkData[];
+  columnGroups?: ColumnGroupConfig[];
 }
 
 export interface RemarkData {
@@ -68,9 +76,18 @@ export async function addSource(
   return res.data;
 }
 
+export interface UpdateSourceRequest {
+  name?: string;
+  alias?: string;
+  headerRow?: number;
+  skipRows?: number[];
+  remarkRows?: number[];
+  columnGroups?: ColumnGroupConfig[];
+}
+
 export async function updateSource(
   id: string,
-  data: { name?: string; alias?: string; headerRow?: number; skipRows?: number[]; remarkRows?: number[] },
+  data: UpdateSourceRequest,
 ): Promise<TableSource> {
   const res = await apiClient.put(`/api/table/sources/${id}`, data);
   return res.data;

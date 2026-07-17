@@ -44,8 +44,8 @@ export default function CardView() {
   if (!data) return <Empty />;
 
   return (
-    <div>
-      <div style={{ marginBottom: 12, display: "flex", alignItems: "center", gap: 8 }}>
+    <div style={{ height: "100%", display: "flex", flexDirection: "column", minHeight: 0 }}>
+      <div style={{ flexShrink: 0, marginBottom: 12, display: "flex", alignItems: "center", gap: 8 }}>
         <Text>分组列：</Text>
         <Select
           size="small"
@@ -56,23 +56,25 @@ export default function CardView() {
         />
       </div>
 
-      {[...groups.entries()].map(([key, rows]) => (
-        <Card key={key} size="small" title={`${key} (${rows.length} 条)`} style={{ marginBottom: 8 }}>
-          {rows.slice(0, 50).map((row, i) => (
-            <Row key={i} gutter={8} style={{ fontSize: 13, padding: "2px 0" }}>
-              {row.map((cell, j) => (
-                <Col key={j} span={Math.max(4, Math.floor(24 / Math.min(row.length, 6)))}>
-                  <Text type="secondary">{data.columns[j]}:</Text>{" "}
-                  {String(cell ?? "")}
-                </Col>
-              ))}
-            </Row>
-          ))}
-          {rows.length > 50 && (
-            <Text type="secondary">... 仅显示前 50 条，共 {rows.length} 条</Text>
-          )}
-        </Card>
-      ))}
+      <div style={{ flex: 1, minHeight: 0, overflow: "auto", paddingRight: 4 }}>
+        {[...groups.entries()].map(([key, rows]) => (
+          <Card key={key} size="small" title={`${key} (${rows.length} 条)`} style={{ marginBottom: 8 }}>
+            {rows.slice(0, 50).map((row, i) => (
+              <Row key={i} gutter={8} style={{ fontSize: 13, padding: "2px 0" }}>
+                {row.map((cell, j) => (
+                  <Col key={j} span={Math.max(4, Math.floor(24 / Math.min(row.length, 6)))}>
+                    <Text type="secondary">{data.columns[j]}:</Text>{" "}
+                    {String(cell ?? "")}
+                  </Col>
+                ))}
+              </Row>
+            ))}
+            {rows.length > 50 && (
+              <Text type="secondary">... 仅显示前 50 条，共 {rows.length} 条</Text>
+            )}
+          </Card>
+        ))}
+      </div>
     </div>
   );
 }

@@ -13,9 +13,10 @@ from pathlib import Path
 
 import pandas as pd
 import uvicorn
+from jinja2 import Environment, TemplateSyntaxError
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from readers.excel import read_excel_df
 from readers.csv import read_csv_df, read_tab_df
@@ -33,15 +34,54 @@ app.add_middleware(
 
 # ─── 数据存储 ───────────────────────────────────────────────────
 
+def _user_data_dir() -> Path:
+    """获取用户数据目录（打包后可写）
+
+    Windows: %APPDATA%/tauri-tool-ai/
+    其他平台: ~/.tauri-tool-ai/
+    """
+    if os.name == "nt":
+        base = Path(os.environ.get("APPDATA", Path.home() / "AppData" / "Roaming"))
+    else:
+        base = Path.home()
+    data_dir = base / "tauri-tool-ai"
+    data_dir.mkdir(parents=True, exist_ok=True)
+    return data_dir
+
+
 def _sources_path() -> Path:
-    return Path(__file__).parent / "sources.json"
+    return _user_data_dir() / "sources.json"
+
+
+def _legacy_data_path(filename: str) -> Path:
+    return Path(__file__).parent / filename
+
+
+def _migrate_legacy_json(filename: str, target: Path) -> None:
+    if target.exists():
+        return
+    legacy = _legacy_data_path(filename)
+    if legacy.exists():
+        target.write_text(legacy.read_text(encoding="utf-8"), encoding="utf-8")
+
+
+def _load_json_list(path: Path) -> list[dict]:
+    if not path.exists():
+        return []
+    text = path.read_text(encoding="utf-8").strip()
+    if not text:
+        return []
+    try:
+        data = json.loads(text)
+    except json.JSONDecodeError:
+        return []
+    return data if isinstance(data, list) else []
 
 
 def _load_sources() -> list[dict]:
     path = _sources_path()
-    if path.exists():
-        return json.loads(path.read_text(encoding="utf-8"))
-    return []
+    _migrate_legacy_json("sources.json", path)
+    return _load_json_list(path)
 
 
 def _save_sources(sources: list[dict]) -> None:
@@ -56,14 +96,21 @@ loaded_tables: dict[str, dict] = {}
 
 # ─── 模型 ───────────────────────────────────────────────────────
 
+class ColumnGroupConfig(BaseModel):
+    id: str
+    title: str
+    columns: list[str]
+
+
 class AddSourceRequest(BaseModel):
     name: str
     type: str   # file / wps / db
     path: str
     alias: str = ""
     headerRow: int = 1
-    skipRows: list[int] = []
-    remarkRows: list[int] = []
+    skipRows: list[int] = Field(default_factory=list)
+    remarkRows: list[int] = Field(default_factory=list)
+    columnGroups: list[ColumnGroupConfig] = Field(default_factory=list)
 
 
 class UpdateSourceRequest(BaseModel):
@@ -72,6 +119,7 @@ class UpdateSourceRequest(BaseModel):
     headerRow: int | None = None
     skipRows: list[int] | None = None
     remarkRows: list[int] | None = None
+    columnGroups: list[ColumnGroupConfig] | None = None
 
 
 class LoadTableRequest(BaseModel):
@@ -83,6 +131,65 @@ class ColumnFilter(BaseModel):
     column: str
     op: str  # eq / ne / contains / gt / lt / gte / lte / in / between
     value: object = None
+
+
+def _dump_column_groups(groups: list[ColumnGroupConfig] | list[dict] | None) -> list[dict]:
+    """序列化列分组配置，保留用户配置原文。"""
+    result: list[dict] = []
+    for group in groups or []:
+        if isinstance(group, BaseModel):
+            item = group.model_dump()
+        elif isinstance(group, dict):
+            item = group
+        else:
+            continue
+        group_id = str(item.get("id", "")).strip()
+        title = str(item.get("title", "")).strip()
+        columns = [str(c).strip() for c in item.get("columns", []) if str(c).strip()]
+        result.append({"id": group_id, "title": title, "columns": columns})
+    return result
+
+
+def _is_contiguous(indices: list[int]) -> bool:
+    if not indices:
+        return False
+    ordered = sorted(indices)
+    return ordered == list(range(ordered[0], ordered[-1] + 1))
+
+
+def _normalize_column_groups(groups: list[dict], columns: list[str]) -> list[dict]:
+    """根据真实列名过滤无效列分组；无效分组直接降级忽略。"""
+    col_index = {col: idx for idx, col in enumerate(columns)}
+    used_columns: set[str] = set()
+    used_ids: set[str] = set()
+    normalized: list[dict] = []
+
+    for group in _dump_column_groups(groups):
+        group_id = group["id"]
+        title = group["title"]
+        if not group_id or group_id in used_ids or not title:
+            continue
+
+        group_columns: list[str] = []
+        seen_in_group: set[str] = set()
+        for col in group["columns"]:
+            if col not in col_index or col in seen_in_group or col in used_columns:
+                continue
+            seen_in_group.add(col)
+            group_columns.append(col)
+
+        if len(group_columns) < 2:
+            continue
+
+        group_columns = sorted(group_columns, key=lambda c: col_index[c])
+        if not _is_contiguous([col_index[c] for c in group_columns]):
+            continue
+
+        used_ids.add(group_id)
+        used_columns.update(group_columns)
+        normalized.append({"id": group_id, "title": title, "columns": group_columns})
+
+    return normalized
 
 
 # ─── 数据源 CRUD ───────────────────────────────────────────────
@@ -106,6 +213,7 @@ async def add_source(req: AddSourceRequest):
         "headerRow": req.headerRow,
         "skipRows": req.skipRows,
         "remarkRows": req.remarkRows,
+        "columnGroups": _dump_column_groups(req.columnGroups),
         "addedAt": time.strftime("%Y-%m-%dT%H:%M:%S"),
     }
     sources.append(source)
@@ -141,6 +249,8 @@ async def update_source(source_id: str, req: UpdateSourceRequest):
                 s["skipRows"] = req.skipRows
             if req.remarkRows is not None:
                 s["remarkRows"] = req.remarkRows
+            if req.columnGroups is not None:
+                s["columnGroups"] = _dump_column_groups(req.columnGroups)
             _save_sources(sources)
             return s
     raise HTTPException(404, "数据源不存在")
@@ -180,12 +290,14 @@ async def load_table(req: LoadTableRequest):
         raise HTTPException(500, f"读取文件失败: {e}")
 
     columns = list(df.columns)
+    column_groups = _normalize_column_groups(source.get("columnGroups", []), columns)
 
     loaded_tables[table_id] = {
         "sourceId": req.sourceId,
         "df": df,
         "columns": columns,
         "remarkData": remark_data,
+        "columnGroups": column_groups,
     }
 
     return {
@@ -194,6 +306,7 @@ async def load_table(req: LoadTableRequest):
         "columns": columns,
         "totalRows": len(df),
         "remarkData": remark_data,
+        "columnGroups": column_groups,
     }
 
 
@@ -291,6 +404,128 @@ async def table_data(
 @app.get("/health")
 async def health():
     return {"status": "ok"}
+
+
+# ─── 模板 CRUD ──────────────────────────────────────────────────
+
+def _templates_path() -> Path:
+    return _user_data_dir() / "templates.json"
+
+
+def _load_templates() -> list[dict]:
+    path = _templates_path()
+    _migrate_legacy_json("templates.json", path)
+    return _load_json_list(path)
+
+
+def _save_templates(templates: list[dict]) -> None:
+    _templates_path().write_text(
+        json.dumps(templates, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+
+
+class SaveTemplateRequest(BaseModel):
+    name: str
+    description: str | None = None
+    page_schema: dict  # PageSchema JSON
+
+
+class UpdateTemplateRequest(BaseModel):
+    name: str | None = None
+    description: str | None = None
+    page_schema: dict | None = None
+
+
+@app.get("/api/table/templates")
+async def list_templates():
+    """获取全部模板列表"""
+    return _load_templates()
+
+
+@app.post("/api/table/templates")
+async def create_template(req: SaveTemplateRequest):
+    """创建/保存模板"""
+    templates = _load_templates()
+    now = time.strftime("%Y-%m-%dT%H:%M:%S")
+    template = {
+        "id": uuid.uuid4().hex[:12],
+        "name": req.name,
+        "description": req.description,
+        "schema": req.page_schema,
+        "createdAt": now,
+        "updatedAt": now,
+    }
+    templates.append(template)
+    _save_templates(templates)
+    return template
+
+
+@app.put("/api/table/templates/{template_id}")
+async def update_template(template_id: str, req: UpdateTemplateRequest):
+    """更新模板"""
+    templates = _load_templates()
+    for t in templates:
+        if t["id"] == template_id:
+            if req.name is not None:
+                t["name"] = req.name
+            if req.description is not None:
+                t["description"] = req.description
+            if req.page_schema is not None:
+                t["schema"] = req.page_schema
+            t["updatedAt"] = time.strftime("%Y-%m-%dT%H:%M:%S")
+            _save_templates(templates)
+            return t
+    raise HTTPException(404, "模板不存在")
+
+
+@app.delete("/api/table/templates/{template_id}")
+async def delete_template(template_id: str):
+    """删除模板"""
+    templates = _load_templates()
+    before = len(templates)
+    templates = [t for t in templates if t["id"] != template_id]
+    if len(templates) == before:
+        raise HTTPException(404, "模板不存在")
+    _save_templates(templates)
+    return {"ok": True}
+
+
+# ─── Jinja2 模板渲染（文本模板模式） ──────────────────────────
+
+class RenderTemplateRequest(BaseModel):
+    template: str  # Jinja2 模板字符串
+    tableId: str
+    maxRows: int = 500
+
+
+@app.post("/api/table/render-template")
+async def render_template(req: RenderTemplateRequest):
+    """用 Jinja2 渲染文本模板，返回渲染后的文本列表"""
+    table = loaded_tables.get(req.tableId)
+    if not table:
+        raise HTTPException(404, "表格未加载")
+
+    df = table["df"]
+    columns = table["columns"]
+    rows = df.head(req.maxRows).values.tolist()
+
+    env = Environment(autoescape=False)
+    try:
+        tmpl = env.from_string(req.template)
+    except TemplateSyntaxError as e:
+        raise HTTPException(400, f"模板语法错误: {e}")
+
+    rendered = []
+    for row in rows:
+        context = {col: row[i] for i, col in enumerate(columns)}
+        context["*"] = " | ".join(str(c) for c in row)
+        try:
+            rendered.append(tmpl.render(**context))
+        except Exception as e:
+            rendered.append(f"[渲染错误: {e}]")
+
+    return {"rendered": rendered, "total": len(rows)}
 
 
 # ─── 启动逻辑 ──────────────────────────────────────────────────

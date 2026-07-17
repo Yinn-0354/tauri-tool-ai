@@ -1,22 +1,25 @@
 import { useState, useEffect } from "react";
 import { Layout, Segmented, Button, InputNumber, Select, message, Space, Typography } from "antd";
 import { ReloadOutlined } from "@ant-design/icons";
-import type { TableSource, TableMeta } from "@/api/table";
+import type { TableSource, TableMeta, ColumnGroupConfig } from "@/api/table";
 import { loadTable, updateSource } from "@/api/table";
 import { useTableViewerStore } from "@/stores/tableViewerStore";
 import SourcePanel from "./SourcePanel";
 import TableView from "./TableView";
 import CardView from "./CardView";
 import TemplateView from "./TemplateView";
+import PageView from "./PageView";
+import ColumnGroupsEditor from "./ColumnGroupsEditor";
 
 const { Sider, Content } = Layout;
 
-type ViewMode = "table" | "card" | "template";
+type ViewMode = "table" | "card" | "template" | "page";
 
 const VIEW_MODE_OPTIONS: { value: ViewMode; label: string }[] = [
   { value: "table", label: "表格" },
   { value: "card", label: "卡片" },
   { value: "template", label: "模板" },
+  { value: "page", label: "页面" },
 ];
 
 const toolbarStyle: React.CSSProperties = {
@@ -40,6 +43,8 @@ export default function TableViewerModule() {
   const [editHeaderRow, setEditHeaderRow] = useState(1);
   const [editSkipRows, setEditSkipRows] = useState<number[]>([]);
   const [editRemarkRows, setEditRemarkRows] = useState<number[]>([]);
+  const [editColumnGroups, setEditColumnGroups] = useState<ColumnGroupConfig[]>([]);
+  const [columnGroupsEditorOpen, setColumnGroupsEditorOpen] = useState(false);
 
   // 切换数据源时，同步配置到 toolbar
   useEffect(() => {
@@ -47,6 +52,7 @@ export default function TableViewerModule() {
       setEditHeaderRow(selectedSource.headerRow ?? 1);
       setEditSkipRows(selectedSource.skipRows ?? []);
       setEditRemarkRows(selectedSource.remarkRows ?? []);
+      setEditColumnGroups(selectedSource.columnGroups ?? []);
     }
   }, [selectedSource]);
 
@@ -77,12 +83,24 @@ export default function TableViewerModule() {
         headerRow: editHeaderRow,
         skipRows: editSkipRows,
         remarkRows: editRemarkRows,
+        columnGroups: editColumnGroups,
       });
+      const updatedSource = {
+        ...(updated as unknown as TableSource),
+        columnGroups: (updated as unknown as TableSource).columnGroups ?? editColumnGroups,
+      };
       // 同步到 store → SourcePanel 通过 watch store 自动同步本地列表
-      setSelectedSource(updated as unknown as TableSource);
-      const meta = await loadTable(selectedSource.id);
-      setCurrentTable(meta as unknown as TableMeta);
-      message.success("配置已更新");
+      setSelectedSource(updatedSource);
+      const meta = await loadTable(updatedSource.id);
+      setCurrentTable({
+        ...(meta as unknown as TableMeta),
+        columnGroups: (meta as unknown as TableMeta).columnGroups ?? editColumnGroups,
+      });
+      if ((updated as unknown as TableSource).columnGroups === undefined && editColumnGroups.length > 0) {
+        message.warning("当前后端未返回表头分组字段，请重启开发环境后再次应用以持久化配置");
+      } else {
+        message.success("配置已更新");
+      }
     } catch {
       message.error("更新配置失败");
     } finally {
@@ -126,8 +144,8 @@ export default function TableViewerModule() {
           )}
         </div>
 
-        {/* 数据源配置编辑条 — 所有视图模式共享 */}
-        {currentTable && selectedSource && (
+        {/* 数据源配置编辑条 — 仅表格视图显示 */}
+        {viewMode === "table" && currentTable && selectedSource && (
           <div
             style={{
               flexShrink: 0,
@@ -176,6 +194,12 @@ export default function TableViewerModule() {
                 style={{ minWidth: 120 }}
               />
             </Space>
+            <Space size={4}>
+              <Typography.Text style={{ fontSize: 12 }}>表头分组</Typography.Text>
+              <Button size="small" onClick={() => setColumnGroupsEditorOpen(true)}>
+                管理（{editColumnGroups.length} 组）
+              </Button>
+            </Space>
             <Button size="small" type="primary" loading={loading} onClick={handleApplyConfig}>
               应用
             </Button>
@@ -187,7 +211,19 @@ export default function TableViewerModule() {
           {viewMode === "table" && <TableView />}
           {viewMode === "card" && <CardView />}
           {viewMode === "template" && <TemplateView />}
+          {viewMode === "page" && <PageView />}
         </div>
+
+        <ColumnGroupsEditor
+          open={columnGroupsEditorOpen}
+          columns={currentTable?.columns ?? []}
+          value={editColumnGroups}
+          onOk={(groups) => {
+            setEditColumnGroups(groups);
+            setColumnGroupsEditorOpen(false);
+          }}
+          onCancel={() => setColumnGroupsEditorOpen(false)}
+        />
       </Content>
     </Layout>
   );

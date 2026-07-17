@@ -1,7 +1,7 @@
 import { create } from "zustand";
 import type { TableMeta, TableSource } from "@/api/table";
 
-type ViewMode = "table" | "card" | "template";
+type ViewMode = "table" | "card" | "template" | "page";
 
 interface TableViewerState {
   viewMode: ViewMode;

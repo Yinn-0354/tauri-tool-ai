@@ -1,51 +1,59 @@
 import { useEffect, useRef, useState, useCallback, useMemo } from "react";
 import { Table, Input, Button, Space, message } from "antd";
 import { SearchOutlined } from "@ant-design/icons";
-import type { TableData, ColumnFilter, RemarkData } from "@/api/table";
-import type { SortOrder } from "antd/es/table/interface";
+import type { TableData, ColumnFilter, RemarkData, ColumnGroupConfig } from "@/api/table";
+import type { SortOrder, ColumnsType, ColumnType } from "antd/es/table/interface";
 import { fetchData } from "@/api/table";
 import { useTableViewerStore } from "@/stores/tableViewerStore";
 import Empty from "@/components/Empty";
 import Loading from "@/components/Loading";
 import type { TableComponents } from "@rc-component/table/lib/interface";
 
+type RowRecord = Record<string, unknown>;
 type SortState = { col: string; order: "asc" | "desc" } | null;
+type RemarkColumn = { key: string; dataIndex?: string | number | readonly (string | number)[] };
 
 /** 稳定的表头 wrapper 组件 — 在模块级定义避免每次渲染重新挂载 */
 const MemoizedHeaderWrapper = ({
   remarkData,
   columns,
+  dataColumns,
   children,
   onHeaderRef,
   ...restProps
 }: {
   remarkData: RemarkData[];
-  columns: { key: string }[];
+  columns: RemarkColumn[];
+  dataColumns: string[];
   children?: React.ReactNode;
   onHeaderRef?: (el: HTMLTableSectionElement | null) => void;
 } & React.HTMLAttributes<HTMLTableSectionElement>) => (
   <thead ref={onHeaderRef} {...restProps}>
     {remarkData.map((remark, index) => (
       <tr key={`remark-${remark.row}`} className="ant-table-cell remark-row">
-        {columns.map((col, colIndex) => (
-          <td
-            key={col.key}
-            style={{
-              padding: "4px 11px",
-              backgroundColor: index % 2 === 0 ? "#fafafa" : "#f6f8fa",
-              borderBottom: "1px solid #f0f0f0",
-              fontSize: 12,
-              color: "#24292e",
-              lineHeight: "20px",
-              whiteSpace: "nowrap",
-              overflow: "hidden",
-              textOverflow: "ellipsis",
-              textAlign: "center",
-            }}
-          >
-            {remark.values[colIndex] || ""}
-          </td>
-        ))}
+        {columns.map((col, colIndex) => {
+          const dataIndex = Array.isArray(col.dataIndex) ? col.dataIndex.join(".") : col.dataIndex;
+          const sourceIndex = typeof dataIndex === "string" ? dataColumns.indexOf(dataIndex) : colIndex;
+          return (
+            <td
+              key={col.key}
+              style={{
+                padding: "4px 11px",
+                backgroundColor: index % 2 === 0 ? "#fafafa" : "#f6f8fa",
+                borderBottom: "1px solid #f0f0f0",
+                fontSize: 12,
+                color: "#24292e",
+                lineHeight: "20px",
+                whiteSpace: "nowrap",
+                overflow: "hidden",
+                textOverflow: "ellipsis",
+                textAlign: "center",
+              }}
+            >
+              {sourceIndex >= 0 ? (remark.values[sourceIndex] || "") : ""}
+            </td>
+          );
+        })}
       </tr>
     ))}
     {children}
@@ -90,6 +98,74 @@ function ColumnFilterDropdown({
       </Space>
     </div>
   );
+}
+
+function isContiguous(indices: number[]) {
+  if (indices.length === 0) return false;
+  const ordered = [...indices].sort((a, b) => a - b);
+  return ordered.every((idx, i) => i === 0 || idx === ordered[i - 1] + 1);
+}
+
+function normalizeColumnGroups(groups: ColumnGroupConfig[] | undefined, columns: string[]) {
+  const colIndex = new Map(columns.map((col, index) => [col, index]));
+  const used = new Set<string>();
+  return (groups ?? []).flatMap((group) => {
+    const title = group.title.trim();
+    const id = group.id.trim();
+    if (!id || !title) return [];
+
+    const groupColumns = [...new Set(group.columns)]
+      .filter((col) => colIndex.has(col) && !used.has(col))
+      .sort((a, b) => colIndex.get(a)! - colIndex.get(b)!);
+
+    if (groupColumns.length < 2) return [];
+    if (!isContiguous(groupColumns.map((col) => colIndex.get(col)!))) return [];
+
+    groupColumns.forEach((col) => used.add(col));
+    return [{ ...group, id, title, columns: groupColumns }];
+  });
+}
+
+function buildNestedColumns(
+  leafColumns: ColumnType<RowRecord>[],
+  groups: ColumnGroupConfig[] | undefined,
+  columns: string[],
+): ColumnsType<RowRecord> {
+  const normalizedGroups = normalizeColumnGroups(groups, columns);
+  if (normalizedGroups.length === 0) return leafColumns;
+
+  const leafByName = new Map(leafColumns.map((col) => [String(col.key), col]));
+  const colIndex = new Map(columns.map((col, index) => [col, index]));
+  const groupByStart = new Map<number, ColumnGroupConfig>();
+  const consumed = new Set<string>();
+
+  normalizedGroups.forEach((group) => {
+    groupByStart.set(colIndex.get(group.columns[0])!, group);
+  });
+
+  const result: ColumnsType<RowRecord> = [];
+  columns.forEach((col, index) => {
+    if (consumed.has(col)) return;
+    const group = groupByStart.get(index);
+    if (group) {
+      const children = group.columns
+        .map((groupCol) => leafByName.get(groupCol))
+        .filter((child): child is ColumnType<RowRecord> => Boolean(child));
+      if (children.length > 0) {
+        result.push({
+          title: group.title,
+          key: `group-${group.id}`,
+          children,
+        });
+        group.columns.forEach((groupCol) => consumed.add(groupCol));
+        return;
+      }
+    }
+    const leaf = leafByName.get(col);
+    if (leaf) result.push(leaf);
+  });
+
+  return result;
 }
 
 export default function TableView() {
@@ -205,7 +281,7 @@ export default function TableView() {
     setPage(1);
   };
 
-  const columns = useMemo(() => {
+  const leafColumns = useMemo<ColumnType<RowRecord>[]>(() => {
     if (!currentTable) return [];
     return currentTable.columns.map((col) => ({
       title: col,
@@ -231,10 +307,21 @@ export default function TableView() {
     }));
   }, [currentTable, sort, filterMap, inputMap]);
 
+  const columns = useMemo<ColumnsType<RowRecord>>(() => {
+    if (!currentTable) return [];
+    return buildNestedColumns(leafColumns, currentTable.columnGroups, currentTable.columns);
+  }, [currentTable, leafColumns]);
+
   // 只处理排序，筛选由按钮直接控制
   const handleSortChange = useCallback((_pagination: any, _filters: any, sorter: any) => {
-    if (sorter.field && sorter.order) {
-      setSort({ col: sorter.field, order: sorter.order === "ascend" ? "asc" : "desc" });
+    const activeSorter = Array.isArray(sorter)
+      ? sorter.find((item) => item?.field && item?.order)
+      : sorter;
+    if (activeSorter?.field && activeSorter?.order) {
+      setSort({
+        col: String(activeSorter.field),
+        order: activeSorter.order === "ascend" ? "asc" : "desc",
+      });
     } else {
       setSort(null);
     }
@@ -266,14 +353,15 @@ export default function TableView() {
         wrapper: (props: any) => (
           <MemoizedHeaderWrapper
             remarkData={remarkData}
-            columns={columns}
+            columns={leafColumns}
+            dataColumns={data?.columns ?? currentTable?.columns ?? []}
             onHeaderRef={handleHeaderRef}
             {...props}
           />
         ),
       },
     }),
-    [remarkData, columns, handleHeaderRef],
+    [remarkData, leafColumns, data?.columns, currentTable?.columns, handleHeaderRef],
   );
 
   if (!currentTable) return <Empty description="请先选择数据源并加载" />;
