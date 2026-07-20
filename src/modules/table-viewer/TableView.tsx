@@ -11,19 +11,16 @@ import type { TableComponents } from "@rc-component/table/lib/interface";
 
 type RowRecord = Record<string, unknown>;
 type SortState = { col: string; order: "asc" | "desc" } | null;
-type RemarkColumn = { key: string; dataIndex?: string | number | readonly (string | number)[] };
 
 /** 稳定的表头 wrapper 组件 — 在模块级定义避免每次渲染重新挂载 */
 const MemoizedHeaderWrapper = ({
   remarkData,
-  columns,
   dataColumns,
   children,
   onHeaderRef,
   ...restProps
 }: {
   remarkData: RemarkData[];
-  columns: RemarkColumn[];
   dataColumns: string[];
   children?: React.ReactNode;
   onHeaderRef?: (el: HTMLTableSectionElement | null) => void;
@@ -31,56 +28,51 @@ const MemoizedHeaderWrapper = ({
   <thead ref={onHeaderRef} {...restProps}>
     {remarkData.map((remark, index) => (
       <tr key={`remark-${remark.row}`} className="ant-table-cell remark-row">
-        {columns.map((col, colIndex) => {
-          const dataIndex = Array.isArray(col.dataIndex) ? col.dataIndex.join(".") : col.dataIndex;
-          const sourceIndex = typeof dataIndex === "string" ? dataColumns.indexOf(dataIndex) : colIndex;
-          return (
-            <td
-              key={col.key}
-              style={{
-                padding: "4px 11px",
-                backgroundColor: index % 2 === 0 ? "#fafafa" : "#f6f8fa",
-                borderBottom: "1px solid #f0f0f0",
-                fontSize: 12,
-                color: "#24292e",
-                lineHeight: "20px",
-                whiteSpace: "nowrap",
-                overflow: "hidden",
-                textOverflow: "ellipsis",
-                textAlign: "center",
-              }}
-            >
-              {sourceIndex >= 0 ? (remark.values[sourceIndex] || "") : ""}
-            </td>
-          );
-        })}
+        {dataColumns.map((col, colIndex) => (
+          <td
+            key={col}
+            style={{
+              padding: "4px 11px",
+              backgroundColor: index % 2 === 0 ? "#fafafa" : "#f6f8fa",
+              borderBottom: "1px solid #f0f0f0",
+              fontSize: 12,
+              color: "#24292e",
+              lineHeight: "20px",
+              whiteSpace: "nowrap",
+              overflow: "hidden",
+              textOverflow: "ellipsis",
+              textAlign: "center",
+            }}
+          >
+            {colIndex < remark.values.length ? remark.values[colIndex] || "" : ""}
+          </td>
+        ))}
       </tr>
     ))}
     {children}
   </thead>
 );
 
-/** 稳定的列筛选下拉组件 — 在模块级定义避免每次渲染重新挂载 */
+/** 稳定的列筛选下拉组件 — 自带本地输入状态，打字不再触发整表重渲染 */
 function ColumnFilterDropdown({
   col,
-  inputMap,
-  setInputMap,
+  initial,
   applyFilter,
   clearFilter,
 }: {
   col: string;
-  inputMap: Record<string, string>;
-  setInputMap: React.Dispatch<React.SetStateAction<Record<string, string>>>;
-  applyFilter: (col: string) => void;
+  initial: string;
+  applyFilter: (col: string, value: string) => void;
   clearFilter: (col: string) => void;
 }) {
+  const [value, setValue] = useState(initial);
   return (
     <div style={{ padding: 8 }}>
       <Input
         placeholder={`搜索 ${col}`}
-        value={inputMap[col] ?? ""}
-        onChange={(e) => setInputMap((prev) => ({ ...prev, [col]: e.target.value }))}
-        onPressEnter={() => applyFilter(col)}
+        value={value}
+        onChange={(e) => setValue(e.target.value)}
+        onPressEnter={() => applyFilter(col, value)}
         style={{ marginBottom: 8, display: "block" }}
       />
       <Space>
@@ -88,11 +80,17 @@ function ColumnFilterDropdown({
           type="primary"
           size="small"
           icon={<SearchOutlined />}
-          onClick={() => applyFilter(col)}
+          onClick={() => applyFilter(col, value)}
         >
           搜索
         </Button>
-        <Button size="small" onClick={() => clearFilter(col)}>
+        <Button
+          size="small"
+          onClick={() => {
+            setValue("");
+            clearFilter(col);
+          }}
+        >
           重置
         </Button>
       </Space>
@@ -173,12 +171,10 @@ export default function TableView() {
   const [data, setData] = useState<TableData | null>(null);
   const [loading, setLoading] = useState(false);
   const [page, setPage] = useState(1);
-  const [pageSize, setPageSize] = useState(100);
+  const [pageSize, setPageSize] = useState(50);
   const [sort, setSort] = useState<SortState>(null);
   // 筛选生效值：列名 → 筛选值（触发请求）
   const [filterMap, setFilterMap] = useState<Record<string, string>>({});
-  // 输入框临时值：列名 → 输入中的文字（不触发请求）
-  const [inputMap, setInputMap] = useState<Record<string, string>>({});
   const [tableHeight, setTableHeight] = useState(400);
   const [headerHeight, setHeaderHeight] = useState(56);
   const observerRef = useRef<ResizeObserver | null>(null);
@@ -217,7 +213,6 @@ export default function TableView() {
     setPage(1);
     setSort(null);
     setFilterMap({});
-    setInputMap({});
   }, [currentTable?.id]);
 
   // 监听容器高度变化
@@ -254,8 +249,7 @@ export default function TableView() {
     setHeaderHeight(el.getBoundingClientRect().height);
   }, []);
 
-  const applyFilter = (col: string) => {
-    const value = inputMap[col] ?? "";
+  const applyFilter = useCallback((col: string, value: string) => {
     setFilterMap((prev) => {
       if (!value) {
         const next = { ...prev };
@@ -265,21 +259,16 @@ export default function TableView() {
       return { ...prev, [col]: value };
     });
     setPage(1);
-  };
+  }, []);
 
-  const clearFilter = (col: string) => {
-    setInputMap((prev) => {
-      const next = { ...prev };
-      delete next[col];
-      return next;
-    });
+  const clearFilter = useCallback((col: string) => {
     setFilterMap((prev) => {
       const next = { ...prev };
       delete next[col];
       return next;
     });
     setPage(1);
-  };
+  }, []);
 
   const leafColumns = useMemo<ColumnType<RowRecord>[]>(() => {
     if (!currentTable) return [];
@@ -287,16 +276,17 @@ export default function TableView() {
       title: col,
       dataIndex: col,
       key: col,
+      width: 160,
       ellipsis: true,
       sorter: true,
       sortOrder: (sort?.col === col ? (sort.order === "asc" ? "ascend" : "descend") : null) as SortOrder,
       // 受控 filteredValue：有值时显示筛选图标，无值时 null
       filteredValue: filterMap[col] != null ? [filterMap[col]] : null,
+      // 下拉自带本地输入状态，打字不重建列；initial 用当前生效值做种子
       filterDropdown: () => (
         <ColumnFilterDropdown
           col={col}
-          inputMap={inputMap}
-          setInputMap={setInputMap}
+          initial={filterMap[col] ?? ""}
           applyFilter={applyFilter}
           clearFilter={clearFilter}
         />
@@ -305,7 +295,7 @@ export default function TableView() {
         <SearchOutlined style={{ color: filtered ? "#1677ff" : undefined }} />
       ),
     }));
-  }, [currentTable, sort, filterMap, inputMap]);
+  }, [currentTable, sort, filterMap, applyFilter, clearFilter]);
 
   const columns = useMemo<ColumnsType<RowRecord>>(() => {
     if (!currentTable) return [];
@@ -347,13 +337,13 @@ export default function TableView() {
   const remarkData = data?.remarkData ?? [];
 
   // 自定义表格组件 — 使用模块级 MemoizedHeaderWrapper 避免每次渲染重新挂载
+  // 不依赖 leafColumns（否则筛选/排序改变 leafColumns 引用时会重挂表头 + ResizeObserver 抖动）
   const tableComponents = useMemo<TableComponents<Record<string, unknown>>>(
     () => ({
       header: {
         wrapper: (props: any) => (
           <MemoizedHeaderWrapper
             remarkData={remarkData}
-            columns={leafColumns}
             dataColumns={data?.columns ?? currentTable?.columns ?? []}
             onHeaderRef={handleHeaderRef}
             {...props}
@@ -361,7 +351,7 @@ export default function TableView() {
         ),
       },
     }),
-    [remarkData, leafColumns, data?.columns, currentTable?.columns, handleHeaderRef],
+    [remarkData, data?.columns, currentTable?.columns, handleHeaderRef],
   );
 
   if (!currentTable) return <Empty description="请先选择数据源并加载" />;
@@ -369,6 +359,9 @@ export default function TableView() {
   if (!data) return <Empty />;
 
   const scrollY = tableHeight > headerHeight ? tableHeight - headerHeight - 16 : 0;
+  // 注：每列已设 width:160（配合 ellipsis 提升渲染 + 为将来虚拟滚动铺路）。
+  // 虚拟滚动（virtual）暂未开启：此前开启导致 OOM，疑似列分组嵌套列在虚拟模式下宽度异常。
+  // 待单独验证后再引入，避免阻塞。
 
   return (
     <div ref={measureRef} style={{ height: "100%", maxHeight: "calc(100vh - 200px)" }}>

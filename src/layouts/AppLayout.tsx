@@ -1,10 +1,12 @@
-import { useEffect } from "react";
+import { useEffect, useState } from "react";
 import { Outlet, useNavigate, useLocation } from "react-router-dom";
-import { Layout, Menu, Tabs } from "antd";
+import { Layout, Menu, Tabs, Button } from "antd";
 import {
   TableOutlined,
   HistoryOutlined,
   RobotOutlined,
+  MenuFoldOutlined,
+  MenuUnfoldOutlined,
 } from "@ant-design/icons";
 import { useTabStore } from "@/stores/tabStore";
 
@@ -15,18 +17,6 @@ const menuItems = [
   { key: "/blame-viewer", icon: <HistoryOutlined />, label: "Blame 查看器" },
   { key: "/ai-agent", icon: <RobotOutlined />, label: "AI Agent" },
 ];
-
-const logoStyle: React.CSSProperties = {
-  height: 48,
-  margin: 16,
-  display: "flex",
-  alignItems: "center",
-  justifyContent: "center",
-  color: "#fff",
-  fontSize: 16,
-  fontWeight: 600,
-  whiteSpace: "nowrap",
-};
 
 const tabsStyle: React.CSSProperties = {
   paddingLeft: 8,
@@ -48,6 +38,15 @@ export default function AppLayout() {
   const location = useLocation();
   const { tabs, activeKey, openTab, closeTab, setActiveKey } = useTabStore();
 
+  const [collapsed, setCollapsed] = useState<boolean>(() => {
+    const saved = localStorage.getItem("sidebar-collapsed");
+    return saved === "true";
+  });
+
+  useEffect(() => {
+    localStorage.setItem("sidebar-collapsed", String(collapsed));
+  }, [collapsed]);
+
   useEffect(() => {
     const currentModule = menuItems.find((m) => m.key === location.pathname);
     if (currentModule) {
@@ -63,9 +62,36 @@ export default function AppLayout() {
 
   return (
     <Layout style={{ height: "100vh", overflow: "hidden" }}>
-      <Sider width={200} theme="dark">
-        <div style={logoStyle}>
-          Tauri Tool AI
+      <Sider
+        width={200}
+        collapsedWidth={64}
+        collapsed={collapsed}
+        collapsible
+        trigger={null}
+        theme="dark"
+      >
+        <div
+          style={{
+            height: 48,
+            display: "flex",
+            alignItems: "center",
+            justifyContent: collapsed ? "center" : "space-between",
+            padding: collapsed ? 0 : "0 12px 0 16px",
+            color: "#fff",
+            fontSize: 16,
+            fontWeight: 600,
+            whiteSpace: "nowrap",
+            overflow: "hidden",
+          }}
+        >
+          {!collapsed && <span>Tauri Tool AI</span>}
+          <Button
+            type="text"
+            size="small"
+            icon={collapsed ? <MenuUnfoldOutlined /> : <MenuFoldOutlined />}
+            onClick={() => setCollapsed((c) => !c)}
+            style={{ color: "#fff" }}
+          />
         </div>
         <Menu
           theme="dark"

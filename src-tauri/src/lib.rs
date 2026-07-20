@@ -69,8 +69,14 @@ fn start_python_sidecar(app: &AppHandle) -> Result<(), Box<dyn std::error::Error
     let python_cmds = ["python"];
     let mut child = None;
     for cmd in &python_cmds {
-        if let Ok(c) = Command::new(cmd)
-            .arg("main.py")
+        let mut command = Command::new(cmd);
+        command.arg("main.py");
+        // 开发模式（cargo tauri dev = debug 构建）开启后端热重载；
+        // 生产构建（cargo tauri build = release）不传 --reload，无重载开销。
+        if cfg!(debug_assertions) {
+            command.arg("--reload");
+        }
+        if let Ok(c) = command
             .current_dir(&backend_dir)
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::piped())
