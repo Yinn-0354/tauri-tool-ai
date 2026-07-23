@@ -1,5 +1,5 @@
 import type { IDatasource, IGetRowsParams } from "@ag-grid-community/core";
-import type { TableState } from "../store/tableStore";
+import type { TableState, TableColumnMeta } from "../store/tableStore";
 
 /**
  * 构造 infinite datasource。
@@ -11,14 +11,20 @@ import type { TableState } from "../store/tableStore";
  *
  * successCallback(rows, lastRow=rowCount) 告诉 ag-Grid 本块数据 + 总行数,
  * 使滚动条尺寸正确;lastRow 到达后 ag-Grid 不再继续请求后续块。
+ *
+ * 注意:后端 /api/table/data 返回的 rows 是「二维数组」(行 × 列,顺序与 columns 一致),
+ * 而 ag-Grid infinite 需要的是「对象数组」(按 columnDef.field 从对象取值)。
+ * 这里按 columns 的列名顺序把二维数组转成对象数组,否则单元格取值为 undefined(表头正常但内容空)。
  */
 export function buildDatasource(opts: {
   backendUrl: string;
   tableId: string;
   rowCount: number;
+  columns: TableColumnMeta[];
 }): IDatasource {
-  const { backendUrl, tableId, rowCount } = opts;
+  const { backendUrl, tableId, rowCount, columns } = opts;
   const base = backendUrl.replace(/\/$/, "");
+  const colNames = columns.map((c) => c.name);
 
   return {
     // 已知总行数 -> 设置后 ag-Grid 据此计算滚动条高度,不再盲拉。
@@ -41,8 +47,16 @@ export function buildDatasource(opts: {
           }>;
         })
         .then((data) => {
-          // rows 为二维数组,顺序与 columns 一致;空值已是 null。
-          params.successCallback(data.rows, data.rowCount);
+          // 后端 rows 为二维数组,顺序与 columns 一致;空值已是 null。
+          // 转 ag-Grid 所需的对象数组:{ [colName]: value }。
+          const objectRows = data.rows.map((arr) => {
+            const obj: Record<string, unknown> = {};
+            colNames.forEach((name, i) => {
+              obj[name] = arr[i];
+            });
+            return obj;
+          });
+          params.successCallback(objectRows, data.rowCount);
         })
         .catch(() => {
           params.failCallback();

@@ -38,8 +38,8 @@ export default function TableView({
   }, [columns]);
 
   const datasource = useMemo<IDatasource>(
-    () => buildDatasource({ backendUrl, tableId, rowCount }),
-    [backendUrl, tableId, rowCount],
+    () => buildDatasource({ backendUrl, tableId, rowCount, columns }),
+    [backendUrl, tableId, rowCount, columns],
   );
 
   return (
