@@ -1,0 +1,10 @@
+node_modules/
+dist/
+target/
+.superpowers/
+__pycache__/
+*.pyc
+.env
+.claude/settings.local.json
+tests/artifacts/
+.pytest_cache/
