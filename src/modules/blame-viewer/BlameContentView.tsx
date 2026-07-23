@@ -1,5 +1,5 @@
 import { useMemo, useState } from "react";
-import { Tag, Tooltip, Pagination } from "antd";
+import { Tag, Tooltip } from "antd";
 import type { BlameLine } from "@/api/blame";
 import { useBlameStore, type BlameStyle } from "@/stores/blameStore";
 import Empty from "@/components/Empty";
@@ -7,7 +7,14 @@ import Loading from "@/components/Loading";
 import type { ReactNode } from "react";
 import CommitInfoModal from "./CommitInfoModal";
 
-// ─── 作者稳定着色（"UI 融洽"：同一作者同一颜色）──────────────
+// ─── 与后端 _split_lines_like_svn 对齐的行切分 ──────────────────
+function splitContentLines(content: string): string[] {
+  const raw = content.split("\n");
+  if (raw.length && raw[raw.length - 1] === "") raw.pop();
+  return raw.map((l) => l.replace(/\r$/, ""));
+}
+
+// ─── 作者稳定着色（“UI 融洽”：同一作者同一颜色）──────────────
 const AUTHOR_PALETTE = [
   "#1677ff", "#52c41a", "#faad14", "#eb2f96",
   "#722ed1", "#13c2c2", "#fa541c", "#2f54eb",
@@ -54,20 +61,39 @@ function highlightLine(text: string, query: string): { nodes: ReactNode; matched
   return { nodes: out, matched };
 }
 
-// ─── 行 blame 元信息（当前页内：是否为本页同版本连续段的起始行）──
+// ─── 行 blame 元信息（含连续同版本分组的边界与行号区间）────────
 interface LineBlame {
   revision: string;
   author: string;
   date: string;
-  isBoundary: boolean; // 本页内同版本连续段的起始行
+  isBoundary: boolean; // 同版本连续段的起始行
+  range: string; // 如 L1-5
 }
 
-function buildPageLineBlame(blameLines: BlameLine[]): LineBlame[] {
-  return blameLines.map((b, idx) => {
-    const prev = idx > 0 ? blameLines[idx - 1] : null;
-    const isBoundary = !prev || prev.revision !== b.revision;
-    return { revision: b.revision, author: b.author, date: b.date, isBoundary };
-  });
+function buildLineBlame(blameLines: BlameLine[]): LineBlame[] {
+  const arr: LineBlame[] = blameLines.map((b) => ({
+    revision: b.revision,
+    author: b.author,
+    date: b.date,
+    isBoundary: false,
+    range: "",
+  }));
+  let i = 0;
+  while (i < arr.length) {
+    const cur = arr[i];
+    if (!cur.revision) {
+      i++;
+      continue;
+    }
+    let j = i + 1;
+    while (j < arr.length && arr[j].revision === cur.revision) j++;
+    cur.isBoundary = true;
+    const start = i + 1;
+    const end = j;
+    cur.range = start === end ? `L${start}` : `L${start}-${end}`;
+    i = j;
+  }
+  return arr;
 }
 
 // ─── 样式 ─────────────────────────────────────────────────────
@@ -152,6 +178,7 @@ function renderBlameChip(
             {blame.author}
           </span>
           <span style={{ color: "#8c8c8c", fontSize: 11, flexShrink: 0 }}>{shortDate(blame.date)}</span>
+          <span style={{ color: "#bfbfbf", fontSize: 11, flexShrink: 0 }}>{blame.range}</span>
         </span>
       </Tooltip>
     );
@@ -160,25 +187,16 @@ function renderBlameChip(
   return null;
 }
 
-interface Props {
-  onPageChange: (page: number, pageSize: number) => void;
-}
-
-export default function BlameContentView({ onPageChange }: Props) {
+export default function BlameContentView() {
   const {
     selectedSource,
+    fileContent,
     fileLoading,
-    pageLoading,
     fileIsBinary,
     fileError,
-    pageLines,
     blameLines,
     blameMode,
     blameStyle,
-    page,
-    pageSize,
-    totalLines,
-    blameTotalLines,
     searchQuery,
   } = useBlameStore();
 
@@ -194,21 +212,20 @@ export default function BlameContentView({ onPageChange }: Props) {
     setCommitModalOpen(true);
   };
 
-  // 当前页行：blame 激活时用 blameLines.content；否则用 pageLines
-  const pageRows = useMemo<{ line: string; lineNumber: number; blame?: BlameLine }[]>(() => {
-    if (blameActive && blameLines) {
+  // blame 激活时从 blameLines 内容渲染（与 blame 同源，保证对齐）；否则从 fileContent 全量切分
+  const lines = useMemo<{ line: string; lineNumber: number; blame?: BlameLine }[]>(() => {
+    if (blameActive && blameLines && blameLines.length > 0) {
       return blameLines.map((b) => ({ line: b.content, lineNumber: b.lineNumber, blame: b }));
     }
-    const start = (page - 1) * pageSize;
-    return pageLines.map((line, idx) => ({ line, lineNumber: start + idx + 1 }));
-  }, [blameActive, blameLines, pageLines, page, pageSize]);
+    return splitContentLines(fileContent).map((line, idx) => ({ line, lineNumber: idx + 1 }));
+  }, [blameActive, blameLines, fileContent]);
 
   const lineBlame = useMemo<LineBlame[]>(
-    () => (blameActive && blameLines ? buildPageLineBlame(blameLines) : []),
+    () => (blameActive && blameLines ? buildLineBlame(blameLines) : []),
     [blameActive, blameLines],
   );
 
-  // 当前页搜索匹配
+  // 全文搜索匹配
   const { totalMatches, lineMatched } = useMemo<{
     totalMatches: number;
     lineMatched: (boolean | null)[] | null;
@@ -216,24 +233,22 @@ export default function BlameContentView({ onPageChange }: Props) {
     if (!searchQuery) return { totalMatches: 0, lineMatched: null };
     const q = searchQuery.toLowerCase();
     let total = 0;
-    const matched = pageRows.map((r) => {
+    const matched = lines.map((r) => {
       const m = r.line.toLowerCase().includes(q);
       if (m) total++;
       return m;
     });
     return { totalMatches: total, lineMatched: matched };
-  }, [pageRows, searchQuery]);
+  }, [lines, searchQuery]);
 
-  const effectiveTotal = blameActive ? blameTotalLines : totalLines;
-
-  if (fileLoading || pageLoading) return <Loading />;
+  if (fileLoading) return <Loading />;
   if (fileIsBinary) return <Empty description="该文件为二进制，无法显示" />;
   if (fileError) return <Empty description="读取文件内容失败" />;
-  if (pageRows.length === 0 && !blameActive) return <Empty description="文件为空" />;
+  if (lines.length === 0 && !blameActive) return <Empty description="文件为空" />;
 
   const rows: ReactNode[] = [];
-  for (let idx = 0; idx < pageRows.length; idx++) {
-    const { line, lineNumber } = pageRows[idx];
+  for (let idx = 0; idx < lines.length; idx++) {
+    const { line, lineNumber } = lines[idx];
     const blame = lineBlame[idx];
     const matched = searchQuery ? lineMatched?.[idx] === true : true;
     const dim = searchQuery && !matched;
@@ -285,22 +300,10 @@ export default function BlameContentView({ onPageChange }: Props) {
     <div style={{ display: "flex", flexDirection: "column", height: "100%", minHeight: 0 }}>
       {searchQuery && (
         <div style={{ flexShrink: 0, padding: "4px 0 8px", fontSize: 12, color: "#8c8c8c" }}>
-          {totalMatches > 0 ? `当前页高亮 ${totalMatches} 处匹配` : "当前页无匹配"}
+          {totalMatches > 0 ? `已高亮 ${totalMatches} 处匹配` : "无匹配内容"}
         </div>
       )}
       <div style={{ flex: 1, minHeight: 0, overflow: "auto", position: "relative" }}>{rows}</div>
-      <div style={{ flexShrink: 0, padding: "8px 0", borderTop: "1px solid #f0f0f0", textAlign: "right" }}>
-        <Pagination
-          current={page}
-          pageSize={pageSize}
-          total={effectiveTotal}
-          showSizeChanger
-          pageSizeOptions={["50", "100", "200", "500"]}
-          showTotal={(t) => `共 ${t} 行`}
-          onChange={onPageChange}
-          size="small"
-        />
-      </div>
       <CommitInfoModal
         open={commitModalOpen}
         sourceId={selectedSource?.id ?? null}

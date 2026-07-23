@@ -20,10 +20,8 @@ export interface VcsSource {
 export interface FileContent {
   content: string;
   encoding: string;
-  truncated: boolean;
   isBinary: boolean;
   fileSize: number;
-  tooLargeForBlame: boolean;
 }
 
 export interface ChangedFile {
@@ -40,26 +38,11 @@ export interface CommitInfo {
   changedFiles: ChangedFile[];
 }
 
-// ─── Blame（分页）──────────────────────────────────────────────
+// ─── Blame ──────────────────────────────────────────────────────
 
-export interface BlamePage {
-  lines: BlameLine[];
-  totalLines: number;
-  page: number;
-  pageSize: number;
-}
-
-export async function fetchBlame(
-  sourceId: string,
-  page: number,
-  pageSize: number,
-): Promise<BlamePage> {
+export async function fetchBlame(sourceId: string): Promise<BlameLine[]> {
   // 后端 svn blame 超时 60s，客户端给 65s 让后端先返回明确错误，避免 axios 提前中断孤儿进程
-  const res = await apiClient.post(
-    "/api/vcs/blame",
-    { sourceId, page, pageSize },
-    { timeout: 65000 },
-  );
+  const res = await apiClient.post("/api/vcs/blame", { sourceId }, { timeout: 65000 });
   return res.data;
 }
 
@@ -106,24 +89,6 @@ export async function deleteVcsSource(id: string): Promise<void> {
 
 export async function fetchFileContent(sourceId: string): Promise<FileContent> {
   const res = await apiClient.post("/api/vcs/file-content", { sourceId });
-  return res.data;
-}
-
-export interface FileLinesPage {
-  lines: string[];
-  totalLines: number;
-  page: number;
-  pageSize: number;
-  isBinary: boolean;
-  truncated: boolean;
-}
-
-export async function fetchFileLines(
-  sourceId: string,
-  page: number,
-  pageSize: number,
-): Promise<FileLinesPage> {
-  const res = await apiClient.post("/api/vcs/file-lines", { sourceId, page, pageSize });
   return res.data;
 }
 

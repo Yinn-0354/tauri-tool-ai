@@ -1,7 +1,7 @@
 import { Layout, Button, Input, Segmented, Space, Typography, Tag, Tooltip, message } from "antd";
 import { TeamOutlined, ClearOutlined } from "@ant-design/icons";
 import type { VcsSource } from "@/api/blame";
-import { fetchFileContent, fetchFileLines, fetchBlame } from "@/api/blame";
+import { fetchFileContent, fetchBlame } from "@/api/blame";
 import { useBlameStore, type BlameStyle } from "@/stores/blameStore";
 import Empty from "@/components/Empty";
 import BlameSourcePanel from "./BlameSourcePanel";
@@ -36,23 +36,14 @@ export default function BlameViewerModule() {
     selectedSource,
     setSelectedSource,
     fileIsBinary,
-    fileTruncated,
-    fileTooLargeForBlame,
+    setFileContent,
     setFileMeta,
     setFileLoading,
     setFileError,
-    page,
-    pageSize,
-    setPage,
-    setPageSize,
-    setTotalLines,
-    setPageLines,
-    setPageLoading,
     blameMode,
     blameStyle,
     blameLoading,
     setBlameLines,
-    setBlameTotalLines,
     setBlameLoading,
     setBlameMode,
     setBlameStyle,
@@ -60,81 +51,23 @@ export default function BlameViewerModule() {
     setSearchQuery,
   } = useBlameStore();
 
-  // 加载纯内容的一页
-  const loadContentPage = async (sourceId: string, p: number, ps: number) => {
-    setPageLoading(true);
-    try {
-      const res = await fetchFileLines(sourceId, p, ps);
-      setPageLines(res.lines);
-      setTotalLines(res.totalLines);
-      setPage(res.page);
-      setFileError(false);
-    } catch {
-      message.error("读取文件内容失败");
-      setPageLines([]);
-      setTotalLines(0);
-      setFileError(true);
-    } finally {
-      setPageLoading(false);
-    }
-  };
-
-  // 加载 blame 的一页
-  const loadBlamePage = async (sourceId: string, p: number, ps: number) => {
-    setBlameLoading(true);
-    try {
-      const res = await fetchBlame(sourceId, p, ps);
-      setBlameLines(res.lines);
-      setBlameTotalLines(res.totalLines);
-      setPage(res.page);
-    } catch (err) {
-      const detail = (err as { response?: { data?: { detail?: string } } })?.response?.data?.detail;
-      message.error(
-        detail ||
-          "获取 Blame 失败（可能文件过大、为二进制、未纳入版本控制，或 SVN 服务器不可达）",
-      );
-      setBlameMode("none");
-      setBlameLines(null);
-    } finally {
-      setBlameLoading(false);
-    }
-  };
-
-  // 选中数据源（文件）→ 拿元信息 + 第一页内容
+  // 选中数据源（文件）→ 一次性加载全部内容
   const handleSelectSource = async (source: VcsSource) => {
-    setSelectedSource(source); // 切源时重置内容/blame/分页/搜索
+    setSelectedSource(source); // 切源时重置内容/blame/搜索
     setFileLoading(true);
-    let isBinary = false;
     try {
       const fc = await fetchFileContent(source.id);
-      setFileMeta({
-        isBinary: fc.isBinary,
-        truncated: fc.truncated,
-        tooLargeForBlame: fc.tooLargeForBlame,
-      });
+      setFileContent(fc.content);
+      setFileMeta({ isBinary: fc.isBinary });
       setFileError(false);
-      isBinary = fc.isBinary;
-    } catch {
-      message.error("读取文件信息失败");
-      setFileMeta({ isBinary: false, truncated: false, tooLargeForBlame: false });
+    } catch (err) {
+      const detail = (err as { response?: { data?: { detail?: string } } })?.response?.data?.detail;
+      message.error(detail || "读取文件内容失败");
+      setFileContent("");
+      setFileMeta({ isBinary: false });
       setFileError(true);
+    } finally {
       setFileLoading(false);
-      return;
-    }
-    setFileLoading(false);
-    if (!isBinary) {
-      loadContentPage(source.id, 1, pageSize);
-    }
-  };
-
-  // 翻页（纯内容或 blame 共用 page/pageSize；根据当前模式请求对应端点）
-  const handlePageChange = (p: number, ps: number) => {
-    if (!selectedSource) return;
-    setPageSize(ps);
-    if (blameMode === "blame") {
-      loadBlamePage(selectedSource.id, p, ps);
-    } else {
-      loadContentPage(selectedSource.id, p, ps);
     }
   };
 
@@ -144,22 +77,28 @@ export default function BlameViewerModule() {
       message.warning("Git blame 暂未实现，请使用 SVN 代码源");
       return;
     }
-    setBlameMode("blame");
-    setPage(1);
-    await loadBlamePage(selectedSource.id, 1, pageSize);
-  };
-
-  const handleClearBlame = async () => {
-    setBlameMode("none");
-    setBlameLines(null);
-    if (selectedSource) {
-      // 回到纯内容当前页
-      await loadContentPage(selectedSource.id, page, pageSize);
+    setBlameLoading(true);
+    try {
+      const lines = await fetchBlame(selectedSource.id);
+      setBlameLines(lines);
+      setBlameMode("blame");
+    } catch (err) {
+      const detail = (err as { response?: { data?: { detail?: string } } })?.response?.data?.detail;
+      message.error(
+        detail ||
+          "获取 Blame 失败（可能为二进制、未纳入版本控制，或 SVN 凭证未缓存/服务器不可达）",
+      );
+      setBlameMode("none");
+    } finally {
+      setBlameLoading(false);
     }
   };
 
+  const handleClearBlame = () => {
+    setBlameMode("none");
+  };
+
   const blameActive = blameMode === "blame";
-  const blameDisabled = fileIsBinary || fileTooLargeForBlame;
 
   return (
     <Layout style={{ height: "100%", background: "#fff", overflow: "hidden" }}>
@@ -197,7 +136,7 @@ export default function BlameViewerModule() {
           {selectedSource && !fileIsBinary && (
             <Space>
               <Input.Search
-                placeholder="搜索当前页内容"
+                placeholder="搜索文件内容"
                 value={searchQuery}
                 onChange={(e) => setSearchQuery(e.target.value)}
                 allowClear
@@ -208,19 +147,14 @@ export default function BlameViewerModule() {
                   清除 Blame
                 </Button>
               ) : (
-                <Tooltip
-                  title={fileTooLargeForBlame ? "文件过大（>10MB），暂不支持 Blame" : undefined}
+                <Button
+                  type="primary"
+                  icon={<TeamOutlined />}
+                  onClick={handleFetchBlame}
+                  loading={blameLoading}
                 >
-                  <Button
-                    type="primary"
-                    icon={<TeamOutlined />}
-                    onClick={handleFetchBlame}
-                    loading={blameLoading}
-                    disabled={blameDisabled}
-                  >
-                    获取 Blame
-                  </Button>
-                </Tooltip>
+                  获取 Blame
+                </Button>
               )}
             </Space>
           )}
@@ -255,25 +189,8 @@ export default function BlameViewerModule() {
 
         {/* 视图区域 */}
         <div style={viewAreaStyle}>
-          {!selectedSource ? <Empty description="请先选择文件" /> : <BlameContentView onPageChange={handlePageChange} />}
+          {!selectedSource ? <Empty description="请先选择文件" /> : <BlameContentView />}
         </div>
-
-        {/* 截断/过大提示 */}
-        {selectedSource && (fileTruncated || fileTooLargeForBlame) && (
-          <div
-            style={{
-              flexShrink: 0,
-              padding: "4px 16px",
-              background: "#fffbe6",
-              borderTop: "1px solid #f0f0f0",
-              fontSize: 12,
-              color: "#ad6800",
-            }}
-          >
-            {fileTruncated && "文件较大，仅显示前 10MB 内容。"}
-            {fileTooLargeForBlame && " 文件超过 10MB，暂不支持 Blame。"}
-          </div>
-        )}
       </Content>
     </Layout>
   );
