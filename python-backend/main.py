@@ -13,6 +13,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
 import table_io
+from vcs import svn as svn_blame_mod
 
 PORT_FILE = os.path.join(tempfile.gettempdir(), "tauri-tool-ai-port.txt")
 
@@ -86,6 +87,49 @@ def table_data(
         "rowCount": row_count,
         "rows": rows,
     }
+
+
+# ───────────────────────── 模块1 SVN blame(可开关) ─────────────────────────
+
+class BlameRequest(BaseModel):
+    path: str
+    revision: str = "BASE"
+    lineNumbers: list[int] | None = None  # 可选:只返回指定行(按需触发)
+
+
+@app.post("/api/vcs/blame")
+async def vcs_blame(req: BlameRequest):
+    """对文件执行 svn blame,返回行级元信息(lineNumber/revision/author/date)。
+
+    - revision 默认 BASE(工作副本 pristine 版本)
+    - lineNumbers 非空时只返回这些行(按需触发,但内部仍跑一次 blame 并缓存)
+    - 结果按 (abspath, revision) 做 LRU 缓存,重复打开不重跑
+    """
+    if not os.path.exists(req.path):
+        raise HTTPException(status_code=404, detail=f"文件不存在: {req.path}")
+    try:
+        if req.lineNumbers:
+            rows = await svn_blame_mod.svn_blame_lines(
+                req.path, req.lineNumbers, req.revision
+            )
+            return {"rows": list(rows.values()), "cached": False}
+        rows = await svn_blame_mod.svn_blame(req.path, req.revision)
+        return {"rows": rows, "cached": False}
+    except PermissionError as e:
+        raise HTTPException(status_code=403, detail=str(e))
+    except TimeoutError as e:
+        raise HTTPException(status_code=504, detail=str(e))
+    except RuntimeError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except FileNotFoundError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@app.post("/api/vcs/blame/clear")
+def vcs_blame_clear(req: BlameRequest):
+    """清空 blame 缓存(或只清某 path)。"""
+    n = svn_blame_mod.clear_blame_cache(req.path if req.path else None)
+    return {"cleared": n}
 
 
 def get_free_port() -> int:

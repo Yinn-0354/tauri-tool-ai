@@ -24,6 +24,10 @@ export interface TableState {
   error: string | null;
   /** 加载中标志。 */
   loading: boolean;
+  /** blame 开关:开启后表格左侧显示 blame gutter,点行查作者。 */
+  blameEnabled: boolean;
+  /** blame 加载中(某个 blame 请求进行中)。 */
+  blameLoading: boolean;
 
   setBackendUrl: (url: string) => void;
   setTable: (info: {
@@ -35,6 +39,8 @@ export interface TableState {
   setStatus: (s: string) => void;
   setError: (e: string | null) => void;
   setLoading: (b: boolean) => void;
+  setBlameEnabled: (b: boolean) => void;
+  setBlameLoading: (b: boolean) => void;
   reset: () => void;
 }
 
@@ -47,6 +53,8 @@ export const useTableStore = create<TableState>((set) => ({
   status: "",
   error: null,
   loading: false,
+  blameEnabled: false,
+  blameLoading: false,
 
   setBackendUrl: (url) => set({ backendUrl: url }),
   setTable: (info) =>
@@ -60,6 +68,8 @@ export const useTableStore = create<TableState>((set) => ({
   setStatus: (s) => set({ status: s }),
   setError: (e) => set({ error: e, loading: false }),
   setLoading: (b) => set({ loading: b }),
+  setBlameEnabled: (b) => set({ blameEnabled: b }),
+  setBlameLoading: (b) => set({ blameLoading: b }),
   reset: () =>
     set({
       tableId: null,
@@ -69,5 +79,7 @@ export const useTableStore = create<TableState>((set) => ({
       status: "",
       error: null,
       loading: false,
+      blameEnabled: false,
+      blameLoading: false,
     }),
 }));

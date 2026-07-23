@@ -4,7 +4,7 @@ import "./agGridSetup";
 import { useEffect, useCallback } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
-import { Button, Layout, Space, Typography, Alert, Spin } from "antd";
+import { Button, Layout, Space, Typography, Alert, Spin, Switch, Tooltip } from "antd";
 import { useTableStore, type TableColumnMeta } from "./store/tableStore";
 import TableView from "./grid/TableView";
 
@@ -20,9 +20,11 @@ export default function App() {
   const status = useTableStore((s) => s.status);
   const error = useTableStore((s) => s.error);
   const loading = useTableStore((s) => s.loading);
+  const blameEnabled = useTableStore((s) => s.blameEnabled);
 
   const setBackendUrl = useTableStore((s) => s.setBackendUrl);
   const setTable = useTableStore((s) => s.setTable);
+  const setBlameEnabled = useTableStore((s) => s.setBlameEnabled);
   const setStatus = useTableStore((s) => s.setStatus);
   const setError = useTableStore((s) => s.setError);
   const setLoading = useTableStore((s) => s.setLoading);
@@ -104,6 +106,18 @@ export default function App() {
           <Button type="primary" onClick={handleOpen} loading={loading}>
             打开表格
           </Button>
+          {tableId !== null && (
+            <Tooltip title="开启后表格左侧显示每行 svn blame 作者(对 SVN 工作副本生效)">
+              <Space size={4} style={{ color: "#eee", alignItems: "center" }}>
+                <Switch
+                  size="small"
+                  checked={blameEnabled}
+                  onChange={setBlameEnabled}
+                />
+                <span style={{ fontSize: 13 }}>Blame</span>
+              </Space>
+            </Tooltip>
+          )}
         </Space>
         <div style={{ marginLeft: "auto", overflow: "hidden" }}>
           <Text
@@ -161,6 +175,8 @@ export default function App() {
             tableId={tableId!}
             rowCount={rowCount!}
             columns={columns}
+            filePath={filePath!}
+            blameEnabled={blameEnabled}
           />
         )}
       </Content>
