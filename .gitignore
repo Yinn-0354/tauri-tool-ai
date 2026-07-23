@@ -8,3 +8,9 @@ __pycache__/
 .claude/settings.local.json
 tests/artifacts/
 .pytest_cache/
+
+# tsc 增量编译产物
+*.tsbuildinfo
+# tsc -b 把 vite.config.ts 编译出的产物
+vite.config.d.ts
+vite.config.js

@@ -1,0 +1,33 @@
+{
+  "name": "tauri-tool-ai",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc -b && vite build",
+    "preview": "vite preview",
+    "tauri": "tauri"
+  },
+  "dependencies": {
+    "@ag-grid-community/core": "^32",
+    "@ag-grid-community/react": "^32",
+    "@ag-grid-community/styles": "^32",
+    "@ant-design/icons": "^6.2.3",
+    "@tauri-apps/api": "^2",
+    "@tauri-apps/plugin-dialog": "^2",
+    "antd": "^6.3.7",
+    "axios": "^1.16.0",
+    "react": "^19",
+    "react-dom": "^19",
+    "zustand": "^5"
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "^2",
+    "@types/react": "^19",
+    "@types/react-dom": "^19",
+    "@vitejs/plugin-react": "^4",
+    "typescript": "~5.7",
+    "vite": "^6"
+  }
+}
