@@ -3,3 +3,9 @@ uvicorn[standard]>=0.49.0
 polars>=1.0.0
 mcp>=1.0.0
 python-multipart>=0.0.9
+# 表格数据层(模块1)
+fastexcel>=0.7.0           # polars read_excel(engine="calamine") 的实际驱动
+python-calamine>=0.8.0    # calamine 引擎本体(fastexcel 依赖)
+xlsxwriter>=3.0.0          # polars DataFrame.write_excel 写 .xlsx
+chardet>=5.0.0             # .tab/.txt 非 utf8 编码探测兜底
+charset-normalizer>=3.0.0  # chardet 备选探测库
