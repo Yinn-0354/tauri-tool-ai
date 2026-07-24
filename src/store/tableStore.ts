@@ -18,6 +18,10 @@ export interface TableState {
   columns: TableColumnMeta[];
   /** 最近一次打开的本地文件绝对路径,仅用于 UI 提示与 blame 请求。 */
   filePath: string | null;
+  /** 表头行(1-based)。null=自动(首行当表头)。由打开时配置弹窗决定,透传给 datasource/search。 */
+  headerRow: number | null;
+  /** 跳过行段列表,每段 [startRow, endRow] 1-based 闭区间。这些行不显示也不搜索。 */
+  skipRows: number[][];
   /** 顶部状态条文案。 */
   status: string;
   /** 错误信息(若有)。 */
@@ -40,7 +44,11 @@ export interface TableState {
     rowCount: number;
     columns: TableColumnMeta[];
     filePath: string;
+    headerRow: number | null;
+    skipRows: number[][];
   }) => void;
+  /** 单独更新 headerRow/skipRows(切换配置时用,不改其它元信息)。 */
+  setHeaderSkip: (info: { headerRow: number | null; skipRows: number[][] }) => void;
   setStatus: (s: string) => void;
   setError: (e: string | null) => void;
   setLoading: (b: boolean) => void;
@@ -59,6 +67,8 @@ export const useTableStore = create<TableState>((set) => ({
   rowCount: null,
   columns: [],
   filePath: null,
+  headerRow: null,
+  skipRows: [],
   status: "",
   error: null,
   loading: false,
@@ -75,6 +85,8 @@ export const useTableStore = create<TableState>((set) => ({
       rowCount: info.rowCount,
       columns: info.columns,
       filePath: info.filePath,
+      headerRow: info.headerRow,
+      skipRows: info.skipRows,
       error: null,
       // 切换文件时清空 blame(新文件的 blame 尚未加载)
       blameLoaded: false,
@@ -82,6 +94,8 @@ export const useTableStore = create<TableState>((set) => ({
       blameError: null,
       blameLoading: false,
     }),
+  setHeaderSkip: (info) =>
+    set({ headerRow: info.headerRow, skipRows: info.skipRows }),
   setStatus: (s) => set({ status: s }),
   setError: (e) => set({ error: e, loading: false }),
   setLoading: (b) => set({ loading: b }),
@@ -98,6 +112,8 @@ export const useTableStore = create<TableState>((set) => ({
       rowCount: null,
       columns: [],
       filePath: null,
+      headerRow: null,
+      skipRows: [],
       status: "",
       error: null,
       loading: false,

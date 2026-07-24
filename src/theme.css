@@ -153,3 +153,9 @@ body {
 .ag-theme-quartz.tt-grid .tt-blame-cell:hover {
   background: var(--accent-soft);
 }
+
+/* 查找命中单元格高亮:半透明强调背景 + 内嵌强调边框,视觉清晰但不喧宾夺主。 */
+.ag-theme-quartz.tt-grid .tt-hit {
+  background: var(--accent-soft) !important;
+  box-shadow: inset 0 0 0 2px var(--accent);
+}

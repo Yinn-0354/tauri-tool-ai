@@ -196,7 +196,7 @@ export default function CommitDetailModal({
                         textAlign: "center",
                       }}
                     >
-                      {c.action || "?"}
+                      {tag.label}
                     </Tag>
                     <span style={{ color: "var(--text-muted)", wordBreak: "break-all" }}>
                       {c.path}

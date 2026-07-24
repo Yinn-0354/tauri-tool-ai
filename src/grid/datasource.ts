@@ -15,6 +15,9 @@ import type { TableColumnMeta } from "../store/tableStore";
  * 注意:后端 /api/table/data 返回的 rows 是「二维数组」(行 × 列,顺序与 columns 一致),
  * 而 ag-Grid infinite 需要的是「对象数组」(按 columnDef.field 从对象取值)。
  * 这里按 columns 的列名顺序把二维数组转成对象数组,否则单元格取值为 undefined(表头正常但内容空)。
+ *
+ * headerRow / skipRows 透传:每次请求带上,后端 read_rows 据此剔除跳过行与表头行,
+ * 返回的是「剔除后数据行」的对应分块;rowCount 也是剔除后的总数。
  */
 export function buildDatasource(opts: {
   backendUrl: string;
@@ -23,10 +26,27 @@ export function buildDatasource(opts: {
   columns: TableColumnMeta[];
   sortCol?: string | null;
   sortAsc?: boolean;
+  headerRow?: number | null;
+  skipRows?: number[][];
 }): IDatasource {
-  const { backendUrl, tableId, rowCount, columns, sortCol, sortAsc } = opts;
+  const {
+    backendUrl,
+    tableId,
+    rowCount,
+    columns,
+    sortCol,
+    sortAsc,
+    headerRow = null,
+    skipRows = [],
+  } = opts;
   const base = backendUrl.replace(/\/$/, "");
   const colNames = columns.map((c) => c.name);
+
+  // skipRows [[a,b],...] → "a-b,c-d" 逗号段;[5,5] → "5-5"。空数组 → 不带参数。
+  const skipRowsParam =
+    skipRows.length > 0
+      ? skipRows.map((seg) => `${seg[0]}-${seg[1]}`).join(",")
+      : "";
 
   return {
     // 已知总行数 -> 设置后 ag-Grid 据此计算滚动条高度,不再盲拉。
@@ -39,6 +59,13 @@ export function buildDatasource(opts: {
         `&endRow=${params.endRow}`;
       if (sortCol) {
         url += `&sortCol=${encodeURIComponent(sortCol)}&sortAsc=${sortAsc ? 1 : 0}`;
+      }
+      // headerRow=null 不带(后端按默认/首行处理);非 null 带。
+      if (headerRow !== null) {
+        url += `&headerRow=${headerRow}`;
+      }
+      if (skipRowsParam) {
+        url += `&skipRows=${encodeURIComponent(skipRowsParam)}`;
       }
 
       fetch(url)

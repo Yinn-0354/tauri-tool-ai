@@ -1,6 +1,6 @@
 import "./agGridSetup"; // 注册 ag-Grid 模块 + 引入样式 + theme.css + 字体
 
-import { useEffect, useCallback, useRef } from "react";
+import { useEffect, useCallback, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import { ConfigProvider, theme as antdTheme, App as AntApp } from "antd";
@@ -9,6 +9,7 @@ import Sidebar from "./components/Sidebar";
 import Toolbar from "./components/Toolbar";
 import EmptyState from "./components/EmptyState";
 import TableView, { type TableViewHandle } from "./grid/TableView";
+import OpenConfigModal, { type TableOpenConfig } from "./components/OpenConfigModal";
 
 /**
  * Carbon Terminal 主题根布局。
@@ -16,6 +17,9 @@ import TableView, { type TableViewHandle } from "./grid/TableView";
  * 结构:Sidebar(56px) + 右侧内容区(flex 列:Toolbar 44px + 主区 flex 1)。
  * 铁律(需求7):根容器 100vh + overflow:hidden,所有外层 overflow:hidden + min-height:0,
  * 仅 ag-Grid 内部滚动。
+ *
+ * 打开文件流程:openDialog → GET /api/table/config 预填 → OpenConfigModal →
+ * POST /api/table/open(带 headerRow/skipRows)+ POST /api/table/config(记忆)→ setTable + setHeaderSkip。
  */
 export default function App() {
   const backendUrl = useTableStore((s) => s.backendUrl);
@@ -23,6 +27,8 @@ export default function App() {
   const rowCount = useTableStore((s) => s.rowCount);
   const columns = useTableStore((s) => s.columns);
   const filePath = useTableStore((s) => s.filePath);
+  const headerRow = useTableStore((s) => s.headerRow);
+  const skipRows = useTableStore((s) => s.skipRows);
   const loading = useTableStore((s) => s.loading);
   const error = useTableStore((s) => s.error);
   const blameLoaded = useTableStore((s) => s.blameLoaded);
@@ -35,6 +41,11 @@ export default function App() {
 
   const tableViewRef = useRef<TableViewHandle>(null);
 
+  // OpenConfigModal 状态
+  const [configOpen, setConfigOpen] = useState(false);
+  const [configPath, setConfigPath] = useState<string>("");
+  const [configInitial, setConfigInitial] = useState<TableOpenConfig | null>(null);
+
   // 握手:取 sidecar 后端地址。
   useEffect(() => {
     invoke<string>("get_backend_url")
@@ -45,15 +56,73 @@ export default function App() {
       .catch((e) => setError(String(e)));
   }, [setBackendUrl, setStatus, setError]);
 
-  // 打开本地文件 -> POST /api/table/open -> 拿 {tableId, rowCount, columns}。
-  // 只存元信息到 store,绝不在前端拉全表数据。
+  // 真正执行打开:带 headerRow/skipRows 调 POST /api/table/open,再 POST /api/table/config 记忆。
+  const doOpen = useCallback(
+    async (path: string, cfg: TableOpenConfig) => {
+      if (!backendUrl) {
+        setError("后端地址尚未就绪");
+        return;
+      }
+      const base = backendUrl.replace(/\/$/, "");
+      setLoading(true);
+      setError(null);
+      try {
+        const resp = await fetch(`${base}/api/table/open`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            path,
+            headerRow: cfg.headerRow,
+            skipRows: cfg.skipRows,
+          }),
+        });
+        if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+        const data = (await resp.json()) as {
+          tableId: string;
+          rowCount: number;
+          columns: TableColumnMeta[];
+        };
+        setTable({
+          tableId: data.tableId,
+          rowCount: data.rowCount,
+          columns: data.columns,
+          filePath: path,
+          headerRow: cfg.headerRow,
+          skipRows: cfg.skipRows,
+        });
+        setStatus(
+          `已打开 ${path} · ${data.rowCount.toLocaleString()} 行 · ${data.columns.length} 列`,
+        );
+        // 记忆配置(失败不阻断打开)。
+        try {
+          await fetch(`${base}/api/table/config`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              path,
+              headerRow: cfg.headerRow,
+              skipRows: cfg.skipRows,
+            }),
+          });
+        } catch {
+          // 记忆失败不影响打开,忽略。
+        }
+      } catch (e) {
+        setError(String(e));
+      } finally {
+        setLoading(false);
+      }
+    },
+    [backendUrl, setTable, setStatus, setError, setLoading]
+  );
+
+  // 打开本地文件:openDialog → GET /api/table/config 预填 → 弹 OpenConfigModal。
   const handleOpen = useCallback(async () => {
     if (!backendUrl) {
       setError("后端地址尚未就绪");
       return;
     }
     setError(null);
-    setLoading(true);
     try {
       const selected = await openDialog({
         multiple: false,
@@ -61,37 +130,56 @@ export default function App() {
       });
       // openDialog 在用户取消时返回 null(单选)。
       if (selected === null) {
-        setLoading(false);
         return;
       }
       const path = selected;
+      // 拉取已记忆配置预填(失败按无记录处理,不阻断)。
       const base = backendUrl.replace(/\/$/, "");
-      const resp = await fetch(`${base}/api/table/open`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ path }),
-      });
-      if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
-      const data = (await resp.json()) as {
-        tableId: string;
-        rowCount: number;
-        columns: TableColumnMeta[];
-      };
-      setTable({
-        tableId: data.tableId,
-        rowCount: data.rowCount,
-        columns: data.columns,
-        filePath: path,
-      });
-      setStatus(
-        `已打开 ${path} · ${data.rowCount.toLocaleString()} 行 · ${data.columns.length} 列`,
-      );
+      let initial: TableOpenConfig | null = null;
+      try {
+        const resp = await fetch(
+          `${base}/api/table/config?path=${encodeURIComponent(path)}`
+        );
+        if (resp.ok) {
+          const cfg = (await resp.json()) as {
+            headerRow: number | null;
+            skipRows: number[][];
+          };
+          initial = { headerRow: cfg.headerRow, skipRows: cfg.skipRows };
+        }
+      } catch {
+        // 忽略,用默认 null/[]。
+      }
+      setConfigPath(path);
+      setConfigInitial(initial);
+      setConfigOpen(true);
     } catch (e) {
       setError(String(e));
-    } finally {
-      setLoading(false);
     }
-  }, [backendUrl, setTable, setStatus, setError, setLoading]);
+  }, [backendUrl, setError]);
+
+  // OpenConfigModal 提交(用户配置好后真正打开)。
+  const onConfigSubmit = useCallback(
+    (cfg: TableOpenConfig) => {
+      setConfigOpen(false);
+      void doOpen(configPath, cfg);
+    },
+    [doOpen, configPath]
+  );
+
+  // OpenConfigModal 跳过配置直接打开(用 initial 或默认 null/[])。
+  const onConfigSkip = useCallback(() => {
+    setConfigOpen(false);
+    const cfg: TableOpenConfig = {
+      headerRow: configInitial?.headerRow ?? null,
+      skipRows: configInitial?.skipRows ?? [],
+    };
+    void doOpen(configPath, cfg);
+  }, [doOpen, configPath, configInitial]);
+
+  const onConfigCancel = useCallback(() => {
+    setConfigOpen(false);
+  }, []);
 
   const handleFetchBlame = useCallback(() => {
     tableViewRef.current?.loadBlame();
@@ -99,6 +187,19 @@ export default function App() {
 
   const handleExportCsv = useCallback(() => {
     tableViewRef.current?.exportCsv();
+  }, []);
+
+  // 查找:调 tableViewRef.current.search(query)。
+  const handleSearch = useCallback(
+    async (query: string) => {
+      return tableViewRef.current?.search(query) ?? { matches: [], total: 0 };
+    },
+    []
+  );
+
+  // 跳转:调 tableViewRef.current.jumpTo(rowIndex, colIndex)。
+  const handleJumpTo = useCallback((rowIndex: number, colIndex: number) => {
+    tableViewRef.current?.jumpTo(rowIndex, colIndex);
   }, []);
 
   const ready = backendUrl !== null && tableId !== null && rowCount !== null;
@@ -142,6 +243,8 @@ export default function App() {
               onOpen={handleOpen}
               onFetchBlame={handleFetchBlame}
               onExportCsv={handleExportCsv}
+              onSearch={handleSearch}
+              onJumpTo={handleJumpTo}
               opening={loading}
             />
 
@@ -211,6 +314,8 @@ export default function App() {
                   rowCount={rowCount!}
                   columns={columns}
                   filePath={filePath!}
+                  headerRow={headerRow}
+                  skipRows={skipRows}
                   blameLoaded={blameLoaded}
                 />
               ) : (
@@ -219,6 +324,16 @@ export default function App() {
             </div>
           </div>
         </div>
+
+        {/* 打开文件前的表格配置弹窗 */}
+        <OpenConfigModal
+          open={configOpen}
+          path={configPath}
+          initial={configInitial}
+          onSubmit={onConfigSubmit}
+          onSkip={onConfigSkip}
+          onCancel={onConfigCancel}
+        />
       </AntApp>
     </ConfigProvider>
   );
