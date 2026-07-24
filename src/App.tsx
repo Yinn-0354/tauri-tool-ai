@@ -1,35 +1,41 @@
-// 模块顶层注册 ag-Grid 社区版模块 + 引入样式。import 副作用在本文件被引入时执行一次。
-import "./agGridSetup";
+import "./agGridSetup"; // 注册 ag-Grid 模块 + 引入样式 + theme.css + 字体
 
-import { useEffect, useCallback } from "react";
+import { useEffect, useCallback, useRef } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
-import { Button, Layout, Space, Typography, Alert, Spin, Switch, Tooltip } from "antd";
+import { ConfigProvider, theme as antdTheme, App as AntApp } from "antd";
 import { useTableStore, type TableColumnMeta } from "./store/tableStore";
-import TableView from "./grid/TableView";
+import Sidebar from "./components/Sidebar";
+import Toolbar from "./components/Toolbar";
+import EmptyState from "./components/EmptyState";
+import TableView, { type TableViewHandle } from "./grid/TableView";
 
-const { Header, Content } = Layout;
-const { Title, Text } = Typography;
-
+/**
+ * Carbon Terminal 主题根布局。
+ *
+ * 结构:Sidebar(56px) + 右侧内容区(flex 列:Toolbar 44px + 主区 flex 1)。
+ * 铁律(需求7):根容器 100vh + overflow:hidden,所有外层 overflow:hidden + min-height:0,
+ * 仅 ag-Grid 内部滚动。
+ */
 export default function App() {
   const backendUrl = useTableStore((s) => s.backendUrl);
   const tableId = useTableStore((s) => s.tableId);
   const rowCount = useTableStore((s) => s.rowCount);
   const columns = useTableStore((s) => s.columns);
   const filePath = useTableStore((s) => s.filePath);
-  const status = useTableStore((s) => s.status);
-  const error = useTableStore((s) => s.error);
   const loading = useTableStore((s) => s.loading);
-  const blameEnabled = useTableStore((s) => s.blameEnabled);
+  const error = useTableStore((s) => s.error);
+  const blameLoaded = useTableStore((s) => s.blameLoaded);
 
   const setBackendUrl = useTableStore((s) => s.setBackendUrl);
   const setTable = useTableStore((s) => s.setTable);
-  const setBlameEnabled = useTableStore((s) => s.setBlameEnabled);
   const setStatus = useTableStore((s) => s.setStatus);
   const setError = useTableStore((s) => s.setError);
   const setLoading = useTableStore((s) => s.setLoading);
 
-  // 握手:取 sidecar 后端地址。沿用现有 App.tsx 的 get_backend_url 写法。
+  const tableViewRef = useRef<TableViewHandle>(null);
+
+  // 握手:取 sidecar 后端地址。
   useEffect(() => {
     invoke<string>("get_backend_url")
       .then((u) => {
@@ -87,99 +93,133 @@ export default function App() {
     }
   }, [backendUrl, setTable, setStatus, setError, setLoading]);
 
+  const handleFetchBlame = useCallback(() => {
+    tableViewRef.current?.loadBlame();
+  }, []);
+
+  const handleExportCsv = useCallback(() => {
+    tableViewRef.current?.exportCsv();
+  }, []);
+
   const ready = backendUrl !== null && tableId !== null && rowCount !== null;
 
   return (
-    <Layout style={{ height: "100vh", display: "flex", flexDirection: "column" }}>
-      <Header
-        style={{
-          display: "flex",
-          alignItems: "center",
-          padding: "0 16px",
-          gap: 16,
-        }}
-      >
-        <Title level={4} style={{ color: "#fff", margin: 0 }}>
-          配置表检查工具 · 表格查看器
-        </Title>
-        <Space>
-          <Button type="primary" onClick={handleOpen} loading={loading}>
-            打开表格
-          </Button>
-          {tableId !== null && (
-            <Tooltip title="开启后表格左侧显示每行 svn blame 作者(对 SVN 工作副本生效)">
-              <Space size={4} style={{ color: "#eee", alignItems: "center" }}>
-                <Switch
-                  size="small"
-                  checked={blameEnabled}
-                  onChange={setBlameEnabled}
-                />
-                <span style={{ fontSize: 13 }}>Blame</span>
-              </Space>
-            </Tooltip>
-          )}
-        </Space>
-        <div style={{ marginLeft: "auto", overflow: "hidden" }}>
-          <Text
-            style={{
-              color: "#eee",
-              whiteSpace: "nowrap",
-              textOverflow: "ellipsis",
-              overflow: "hidden",
-              display: "inline-block",
-              maxWidth: "60vw",
-            }}
-            title={filePath ?? status}
-          >
-            {status || (backendUrl ? "就绪" : "正在连接后端…")}
-          </Text>
-        </div>
-      </Header>
+    <ConfigProvider
+      theme={{
+        algorithm: antdTheme.darkAlgorithm,
+        token: {
+          colorPrimary: "#c8e663",
+          colorBgBase: "#0e1113",
+          colorTextBase: "#e7eaec",
+          fontFamily:
+            '"IBM Plex Sans","PingFang SC","Microsoft YaHei",sans-serif',
+          borderRadius: 6,
+        },
+      }}
+    >
+      <AntApp style={{ height: "100%" }}>
+        <div
+          style={{
+            height: "100vh",
+            overflow: "hidden",
+            display: "flex",
+          }}
+        >
+          <Sidebar />
 
-      {error && (
-        <Alert
-          type="error"
-          message={error}
-          banner
-          closable
-          onClose={() => setError(null)}
-        />
-      )}
-
-      <Content
-        style={{
-          flex: 1,
-          minHeight: 0,
-          padding: 8,
-          display: "flex",
-          flexDirection: "column",
-        }}
-      >
-        {!ready ? (
+          {/* 右侧内容区 */}
           <div
             style={{
               flex: 1,
+              minWidth: 0,
+              minHeight: 0,
               display: "flex",
-              alignItems: "center",
-              justifyContent: "center",
+              flexDirection: "column",
+              overflow: "hidden",
             }}
           >
-            <Spin
-              tip={backendUrl ? "点击「打开表格」选择本地文件" : "等待后端…"}
-              size="large"
+            <Toolbar
+              onOpen={handleOpen}
+              onFetchBlame={handleFetchBlame}
+              onExportCsv={handleExportCsv}
+              opening={loading}
             />
+
+            {/* 顶部 2px 进度条:仅在打开解析中(loading)显示,不阻断布局,不产生额外滚动条 */}
+            {loading && (
+              <div
+                style={{
+                  height: 2,
+                  flex: "0 0 2px",
+                  background: "var(--accent)",
+                  boxShadow: "0 0 8px var(--accent)",
+                }}
+              />
+            )}
+
+            {/* error 横幅:固定高度,不撑高 */}
+            {error && (
+              <div
+                style={{
+                  flex: "0 0 auto",
+                  background: "rgba(255,107,107,.12)",
+                  color: "var(--danger)",
+                  borderBottom: "1px solid var(--border)",
+                  padding: "6px 12px",
+                  fontFamily: "var(--font-mono)",
+                  fontSize: 12,
+                  display: "flex",
+                  alignItems: "center",
+                  justifyContent: "space-between",
+                  gap: 8,
+                }}
+              >
+                <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                  {error}
+                </span>
+                <button
+                  onClick={() => setError(null)}
+                  style={{
+                    background: "transparent",
+                    border: "none",
+                    color: "var(--danger)",
+                    cursor: "pointer",
+                    fontFamily: "var(--font-mono)",
+                    fontSize: 12,
+                  }}
+                >
+                  关闭
+                </button>
+              </div>
+            )}
+
+            {/* 主区:flex 1 + min-height:0 + overflow:hidden,仅 ag-Grid 内部滚动 */}
+            <div
+              style={{
+                flex: 1,
+                minHeight: 0,
+                overflow: "hidden",
+                display: "flex",
+                background: "var(--bg)",
+              }}
+            >
+              {ready ? (
+                <TableView
+                  ref={tableViewRef}
+                  backendUrl={backendUrl!}
+                  tableId={tableId!}
+                  rowCount={rowCount!}
+                  columns={columns}
+                  filePath={filePath!}
+                  blameLoaded={blameLoaded}
+                />
+              ) : (
+                <EmptyState onOpen={handleOpen} loading={loading} />
+              )}
+            </div>
           </div>
-        ) : (
-          <TableView
-            backendUrl={backendUrl!}
-            tableId={tableId!}
-            rowCount={rowCount!}
-            columns={columns}
-            filePath={filePath!}
-            blameEnabled={blameEnabled}
-          />
-        )}
-      </Content>
-    </Layout>
+        </div>
+      </AntApp>
+    </ConfigProvider>
   );
 }

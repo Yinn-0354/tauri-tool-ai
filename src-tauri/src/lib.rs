@@ -57,11 +57,16 @@ fn start_sidecar() -> std::io::Result<Child> {
     cmd.spawn()
 }
 
-/// 读取 Python 写入的端口文件
+/// 读取 Python 写入的端口文件,并验证该端口确实在监听(避免读到上次遗留的陈旧端口)。
 fn read_port() -> Option<u16> {
     let path = env::temp_dir().join(PORT_FILE);
     let content = fs::read_to_string(&path).ok()?;
-    content.trim().parse::<u16>().ok()
+    let port = content.trim().parse::<u16>().ok()?;
+    // 探测端口是否真在监听:连一下即断。连不上说明是陈旧端口,继续等。
+    use std::net::TcpStream;
+    use std::time::Duration as Dur;
+    TcpStream::connect_timeout(&format!("127.0.0.1:{port}").parse().ok()?, Dur::from_millis(200)).ok()?;
+    Some(port)
 }
 
 #[tauri::command]
@@ -98,9 +103,11 @@ pub fn run() {
         .manage(BackendPort(Mutex::new(None)))
         .manage(SidecarChild(Mutex::new(None)))
         .setup(|app| {
+            // 启动前删除残留端口文件,避免读到上次 sidecar 的陈旧端口
+            let _ = fs::remove_file(env::temp_dir().join(PORT_FILE));
             let child = start_sidecar()?;
             app.state::<SidecarChild>().0.lock().unwrap().replace(child);
-            // 轮询端口文件,直到 Python 就绪或超时
+            // 轮询端口文件,直到 Python 就绪(且端口真能连)或超时
             let port = (0..POLL_MAX)
                 .find_map(|_| {
                     std::thread::sleep(POLL_INTERVAL);
@@ -115,11 +122,22 @@ pub fn run() {
         .expect("error while building tauri application");
 
     app.run(|app_handle, event| {
-        // 退出时 kill sidecar 进程树
-        if let tauri::RunEvent::Exit = event {
+        // 退出时 kill sidecar 进程树(主进程 + 其子进程,uvicorn reload 模式会有子进程)
+        if matches!(event, tauri::RunEvent::Exit | tauri::RunEvent::ExitRequested { .. }) {
             if let Some(state) = app_handle.try_state::<SidecarChild>() {
                 if let Some(mut child) = state.0.lock().unwrap().take() {
+                    let pid = child.id();
                     let _ = child.kill();
+                    // Windows:taskkill /F /T 杀整个进程树,避免遗留 uvicorn 子进程
+                    #[cfg(windows)]
+                    {
+                        let _ = std::process::Command::new("taskkill")
+                            .args(["/F", "/T", "/PID"])
+                            .arg(pid.to_string())
+                            .stdout(Stdio::null())
+                            .stderr(Stdio::null())
+                            .status();
+                    }
                 }
             }
         }

@@ -15,3 +15,9 @@ ModuleRegistry.registerModules([
 // ag-Grid 样式:ag-grid.css 基础布局 + ag-theme-quartz 主题。容器需 className="ag-theme-quartz"。
 import "@ag-grid-community/styles/ag-grid.css";
 import "@ag-grid-community/styles/ag-theme-quartz.css";
+
+// Carbon Terminal 主题 token + 全局 body + ag-Grid tt-grid 覆盖(纵向线/紧凑/hover/选中/滚动条)
+import "./theme.css";
+
+// IBM Plex 字体本地打包(UI 用 Plex Sans variable,数据用 Plex Mono 400/500)。
+import "./fonts";

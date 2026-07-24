@@ -1,0 +1,155 @@
+/**
+ * Carbon Terminal 主题 token + 全局基础 + ag-Grid tt-grid 主题覆盖。
+ *
+ * 审美方向:深石墨基底 + 单一电石绿锐利强调色,工程精密感。
+ * 所有颜色以 CSS 变量定义在 :root,组件用 var(--xxx) 引用,便于未来主题切换。
+ */
+
+:root {
+  /* 背景层:基底 / 面板 / 抬升 */
+  --bg: #0e1113;
+  --bg-panel: #15191c;
+  --bg-elevated: #1c2125;
+
+  /* 边框:常规 / 强调(用于 pinned 列分隔等) */
+  --border: #262d31;
+  --border-strong: #313a40;
+
+  /* 文本:主 / 次要 / 暗淡 */
+  --text: #e7eaec;
+  --text-muted: #9aa3aa;
+  --text-dim: #6b747b;
+
+  /* 强调:电石绿,单一强调色,禁止紫色渐变 */
+  --accent: #c8e663;
+  --accent-soft: rgba(200, 230, 99, 0.12);
+  --accent-dim: #3a4423;
+
+  /* 语义色 */
+  --danger: #ff6b6b;
+  --warn: #e8a33d;
+
+  /* 字体栈:UI/body 用 Plex Sans;数据/品牌/数字用 Plex Mono;CJK 回退系统字体 */
+  --font-sans: "IBM Plex Sans", "PingFang SC", "Microsoft YaHei", sans-serif;
+  --font-mono: "IBM Plex Mono", ui-monospace, monospace;
+}
+
+[data-theme="dark"] {
+  /* 显式 dark 主题别名,与 :root 等价,供 AntD ConfigProvider 使用。 */
+  --bg: #0e1113;
+  --bg-panel: #15191c;
+  --bg-elevated: #1c2125;
+  --border: #262d31;
+  --border-strong: #313a40;
+  --text: #e7eaec;
+  --text-muted: #9aa3aa;
+  --text-dim: #6b747b;
+  --accent: #c8e663;
+  --accent-soft: rgba(200, 230, 99, 0.12);
+  --accent-dim: #3a4423;
+  --danger: #ff6b6b;
+  --warn: #e8a33d;
+  --font-sans: "IBM Plex Sans", "PingFang SC", "Microsoft YaHei", sans-serif;
+  --font-mono: "IBM Plex Mono", ui-monospace, monospace;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+  margin: 0;
+  padding: 0;
+}
+
+body {
+  background: var(--bg);
+  color: var(--text);
+  font-family: var(--font-sans);
+  font-size: 13px;
+  line-height: 1.45;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  overflow: hidden;
+}
+
+/* 自定义滚动条:thin,与主题协调。仅 webkit。 */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: var(--border-strong) var(--bg);
+}
+
+*::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+
+*::-webkit-scrollbar-track {
+  background: var(--bg);
+}
+
+*::-webkit-scrollbar-thumb {
+  background: var(--border-strong);
+  border-radius: 4px;
+}
+
+*::-webkit-scrollbar-thumb:hover {
+  background: var(--text-dim);
+}
+
+/* ---------------------------------------------------------------------------
+ * ag-Grid tt-grid 主题覆盖(Carbon Terminal)
+ * 容器需 className="ag-theme-quartz tt-grid"。
+ * 纵向线 + 紧凑 + hover + 选中,全部通过 ag-Grid CSS 变量与局部覆盖实现。
+ * ------------------------------------------------------------------------- */
+
+.ag-theme-quartz.tt-grid {
+  --ag-background-color: var(--bg);
+  --ag-foreground-color: var(--text);
+  --ag-border-color: var(--border);
+  --ag-header-background-color: var(--bg-panel);
+  --ag-odd-row-background-color: transparent;
+  --ag-row-hover-color: var(--bg-elevated);
+  --ag-header-foreground-color: var(--text-muted);
+  --ag-range-selection-border-color: var(--accent);
+  --ag-selected-row-background-color: var(--accent-soft);
+
+  /* 紧凑:行高 26 / 表头 30 / 单元格水平 padding 8 */
+  --ag-row-height: 26px;
+  --ag-header-height: 30px;
+  --ag-cell-horizontal-padding: 8px;
+
+  /* 字体:header 与单元格都用 sans,数据用 tabular-nums 对齐数字 */
+  --ag-font-family: var(--font-sans);
+  --ag-font-size: 12px;
+}
+
+.ag-theme-quartz.tt-grid .ag-cell {
+  font-size: 12px;
+  line-height: 1.3;
+  font-variant-numeric: tabular-nums;
+  border-right: 1px solid var(--border);
+}
+
+.ag-theme-quartz.tt-grid .ag-header-cell {
+  font-size: 12px;
+  font-weight: 500;
+  border-right: 1px solid var(--border);
+}
+
+.ag-theme-quartz.tt-grid .ag-row {
+  border-bottom: 1px solid var(--border);
+}
+
+/* pinned 左侧列(gutter)用更强的分隔边框 */
+.ag-theme-quartz.tt-grid .ag-pinned-left-cols-container .ag-cell {
+  border-right: 1px solid var(--border-strong);
+}
+
+/* blame gutter 单元格可点击:给个 hover 反馈 */
+.ag-theme-quartz.tt-grid .tt-blame-cell {
+  cursor: pointer;
+}
+
+.ag-theme-quartz.tt-grid .tt-blame-cell:hover {
+  background: var(--accent-soft);
+}

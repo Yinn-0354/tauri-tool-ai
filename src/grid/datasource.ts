@@ -1,5 +1,5 @@
 import type { IDatasource, IGetRowsParams } from "@ag-grid-community/core";
-import type { TableState, TableColumnMeta } from "../store/tableStore";
+import type { TableColumnMeta } from "../store/tableStore";
 
 /**
  * 构造 infinite datasource。
@@ -64,6 +64,3 @@ export function buildDatasource(opts: {
     },
   };
 }
-
-/** 触发引用,确保 TableState 类型在 strict noUnusedLocals 下被纳入类型图。 */
-export type { TableState };

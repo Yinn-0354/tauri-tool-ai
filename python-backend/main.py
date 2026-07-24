@@ -132,6 +132,39 @@ def vcs_blame_clear(req: BlameRequest):
     return {"cleared": n}
 
 
+# ───────────────────────── 模块1 SVN log(提交详情弹窗) ─────────────────────────
+
+class LogRequest(BaseModel):
+    path: str
+    revision: str  # 如 "12345" 或 "BASE"/"HEAD"
+
+
+@app.post("/api/vcs/log")
+async def vcs_log(req: LogRequest):
+    """查询单个 revision 的提交详情(供前端提交详情弹窗)。
+
+    后端执行 svn log --xml -v -r <revision> <path>,返回第一个 logentry 的
+    revision/author/date/message/changedPaths。
+    """
+    if not os.path.exists(req.path):
+        raise HTTPException(status_code=404, detail=f"文件不存在: {req.path}")
+    try:
+        result = await svn_blame_mod.svn_log(req.path, req.revision)
+    except FileNotFoundError as e:
+        # svn 不可用 → 400;无 logentry → 404。这里按 404 处理路径/版本不存在
+        # svn 不可用的提示含"找不到 svn 可执行文件",归 400
+        if "找不到 svn 可执行文件" in str(e):
+            raise HTTPException(status_code=400, detail=str(e))
+        raise HTTPException(status_code=404, detail=str(e))
+    except PermissionError as e:
+        raise HTTPException(status_code=403, detail=str(e))
+    except TimeoutError as e:
+        raise HTTPException(status_code=504, detail=str(e))
+    except RuntimeError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    return result
+
+
 def get_free_port() -> int:
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
         s.bind(("127.0.0.1", 0))

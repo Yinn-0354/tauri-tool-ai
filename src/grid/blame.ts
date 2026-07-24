@@ -38,7 +38,7 @@ const PALETTE = [
 ];
 
 export function authorColor(author: string): string {
-  if (!author) return "transparent";
+  if (!author) return "var(--text-dim)";
   let c = AUTHOR_COLORS.get(author);
   if (!c) {
     let h = 0;

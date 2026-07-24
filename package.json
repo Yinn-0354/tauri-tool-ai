@@ -17,6 +17,8 @@
     "@ag-grid-community/react": "^32",
     "@ag-grid-community/styles": "^32",
     "@ant-design/icons": "^6.2.3",
+    "@fontsource-variable/ibm-plex-sans": "^5.3.0",
+    "@fontsource/ibm-plex-mono": "^5.3.0",
     "@tauri-apps/api": "^2",
     "@tauri-apps/plugin-dialog": "^2",
     "antd": "^6.3.7",

@@ -16,17 +16,22 @@ export interface TableState {
   rowCount: number | null;
   /** 列元信息,用于动态生成 columnDefs。 */
   columns: TableColumnMeta[];
-  /** 最近一次打开的本地文件绝对路径,仅用于 UI 提示。 */
+  /** 最近一次打开的本地文件绝对路径,仅用于 UI 提示与 blame 请求。 */
   filePath: string | null;
   /** 顶部状态条文案。 */
   status: string;
   /** 错误信息(若有)。 */
   error: string | null;
-  /** 加载中标志。 */
+  /** 打开文件 / 解析中。 */
   loading: boolean;
-  /** blame 开关:开启后表格左侧显示 blame gutter,点行查作者。 */
-  blameEnabled: boolean;
-  /** blame 加载中(某个 blame 请求进行中)。 */
+
+  /** blame 是否已加载完成(开关语义已移除,改为按钮触发一次性加载)。 */
+  blameLoaded: boolean;
+  /** blame 行数(= 文件总行数,显示在工具栏按钮 "Blame ✓ N")。 */
+  blameCount: number;
+  /** blame 加载错误(仅工具栏 tooltip/小字呈现)。 */
+  blameError: string | null;
+  /** blame 请求进行中(按钮 loading 态)。 */
   blameLoading: boolean;
 
   setBackendUrl: (url: string) => void;
@@ -39,7 +44,11 @@ export interface TableState {
   setStatus: (s: string) => void;
   setError: (e: string | null) => void;
   setLoading: (b: boolean) => void;
-  setBlameEnabled: (b: boolean) => void;
+  setBlame: (info: {
+    loaded: boolean;
+    count: number;
+    error?: string | null;
+  }) => void;
   setBlameLoading: (b: boolean) => void;
   reset: () => void;
 }
@@ -53,7 +62,10 @@ export const useTableStore = create<TableState>((set) => ({
   status: "",
   error: null,
   loading: false,
-  blameEnabled: false,
+
+  blameLoaded: false,
+  blameCount: 0,
+  blameError: null,
   blameLoading: false,
 
   setBackendUrl: (url) => set({ backendUrl: url }),
@@ -64,11 +76,21 @@ export const useTableStore = create<TableState>((set) => ({
       columns: info.columns,
       filePath: info.filePath,
       error: null,
+      // 切换文件时清空 blame(新文件的 blame 尚未加载)
+      blameLoaded: false,
+      blameCount: 0,
+      blameError: null,
+      blameLoading: false,
     }),
   setStatus: (s) => set({ status: s }),
   setError: (e) => set({ error: e, loading: false }),
   setLoading: (b) => set({ loading: b }),
-  setBlameEnabled: (b) => set({ blameEnabled: b }),
+  setBlame: (info) =>
+    set({
+      blameLoaded: info.loaded,
+      blameCount: info.count,
+      blameError: info.error ?? null,
+    }),
   setBlameLoading: (b) => set({ blameLoading: b }),
   reset: () =>
     set({
@@ -79,7 +101,9 @@ export const useTableStore = create<TableState>((set) => ({
       status: "",
       error: null,
       loading: false,
-      blameEnabled: false,
+      blameLoaded: false,
+      blameCount: 0,
+      blameError: null,
       blameLoading: false,
     }),
 }));
