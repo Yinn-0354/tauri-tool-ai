@@ -21,8 +21,10 @@ export function buildDatasource(opts: {
   tableId: string;
   rowCount: number;
   columns: TableColumnMeta[];
+  sortCol?: string | null;
+  sortAsc?: boolean;
 }): IDatasource {
-  const { backendUrl, tableId, rowCount, columns } = opts;
+  const { backendUrl, tableId, rowCount, columns, sortCol, sortAsc } = opts;
   const base = backendUrl.replace(/\/$/, "");
   const colNames = columns.map((c) => c.name);
 
@@ -30,11 +32,14 @@ export function buildDatasource(opts: {
     // 已知总行数 -> 设置后 ag-Grid 据此计算滚动条高度,不再盲拉。
     rowCount,
     getRows(params: IGetRowsParams) {
-      const url =
+      let url =
         `${base}/api/table/data` +
         `?tableId=${encodeURIComponent(tableId)}` +
         `&startRow=${params.startRow}` +
         `&endRow=${params.endRow}`;
+      if (sortCol) {
+        url += `&sortCol=${encodeURIComponent(sortCol)}&sortAsc=${sortAsc ? 1 : 0}`;
+      }
 
       fetch(url)
         .then((res) => {

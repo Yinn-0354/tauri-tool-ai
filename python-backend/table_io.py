@@ -205,6 +205,42 @@ def _to_jsonable(v: Any) -> Any:
     return str(v)
 
 
+def _sort_index_path(table_id: str, sort_col: str, sort_asc: bool) -> Path:
+    """排序索引缓存路径:<tableId>.sortidx_<col>_<asc|desc>.json。"""
+    direction = "asc" if sort_asc else "desc"
+    # 列名可能含特殊字符,用 hash 规避文件名问题
+    col_hash = hashlib.sha1(sort_col.encode("utf-8")).hexdigest()[:16]
+    return CACHE_DIR / f"{table_id}.sortidx_{col_hash}_{direction}.json"
+
+
+def _get_sort_index(parquet_path: Path, sort_col: str, sort_asc: bool) -> list[int] | None:
+    """取排序索引(行号顺序)。命中缓存则直接返回,否则计算排序索引并落盘。
+
+    排序索引:把 parquet 按 sort_col 排序后的「原始行号顺序」存下来。
+    后续该列该方向排序只需按索引取行,不必重复全量排序。
+    返回 None 表示该列不存在或无法排序。
+    """
+    table_id = parquet_path.stem
+    idx_path = _sort_index_path(table_id, sort_col, sort_asc)
+    if idx_path.exists():
+        try:
+            with open(idx_path, "r", encoding="utf-8") as f:
+                return json.load(f)
+        except (OSError, json.JSONDecodeError):
+            pass
+    # 计算:scan parquet 取该列,sort 得到原始行号顺序
+    lazy = pl.scan_parquet(parquet_path)
+    schema = lazy.collect_schema()
+    if sort_col not in schema:
+        return None
+    # row_index() 给每行原始行号,按 sort_col 排序后取 row_index 即排序后的原始行顺序
+    with_idx = lazy.with_row_index("row_index").sort(sort_col, descending=not sort_asc)
+    order = with_idx.select("row_index").collect()["row_index"].to_list()
+    with open(idx_path, "w", encoding="utf-8") as f:
+        json.dump(order, f)
+    return order
+
+
 def read_rows(
     table_id: str,
     start_row: int,
@@ -212,7 +248,10 @@ def read_rows(
     sort_col: str | None = None,
     sort_asc: bool = True,
 ) -> tuple[list[list[Any]], int]:
-    """对缓存 Parquet 做 lazy scan,可选 sort,slice(start_row, end_row-startRow),collect。
+    """对缓存 Parquet 取二维行数组,可选按列排序。
+
+    排序策略:用列级排序索引缓存(首次排序列时计算排序后的原始行号顺序并落盘,
+    后续该列该方向直接按索引取行,避免每次全量排序)。
 
     返回 (rows, rowCount):rows 为二维数组,顺序与 columns 一致,空值 None。
     """
@@ -223,17 +262,29 @@ def read_rows(
     lazy = pl.scan_parquet(parquet_path)
     row_count = lazy.select(pl.len()).collect().item()
 
-    if sort_col:
-        schema = lazy.collect_schema()
-        if sort_col in schema:
-            lazy = lazy.sort(sort_col, descending=not sort_asc)
-
     length = max(0, end_row - start_row)
     if length == 0:
         return [], row_count
 
-    # slice_pushdown 会让这个 slice 下推到 parquet 读取,不全量物化
+    if sort_col:
+        sort_order = _get_sort_index(parquet_path, sort_col, sort_asc)
+        if sort_order is not None:
+            # 按排序索引取对应原始行号:scan_parquet 取这些行(有序),保持原列顺序
+            wanted = sort_order[start_row : start_row + length]
+            # 用 lazy + filter row_index 在 [wanted] 内取行;polars 无直接「按行号集合取」,
+            # 这里用 with_row_index + filter is_in + 按 wanted 顺序重排
+            with_idx = lazy.with_row_index("row_index")
+            # 收集指定行(可能少于 length 若 wanted 有越界,但 sort_order 来自全表不会越界)
+            df = with_idx.filter(pl.col("row_index").is_in(wanted)).collect()
+            # 按 wanted 顺序排列(因为 filter 不保序)
+            row_to_idx = {r: i for i, r in enumerate(df["row_index"].to_list())}
+            ordered_rows = [None] * len(wanted)
+            rows_raw = df.drop("row_index").rows()
+            for pos, orig_row_idx in enumerate(wanted):
+                ordered_rows[pos] = rows_raw[row_to_idx[orig_row_idx]]
+            return [[_to_jsonable(v) for v in row] for row in ordered_rows], row_count
+
+    # 无排序:lazy slice 下推,不全量物化
     df = lazy.slice(start_row, length).collect()
-    # rows() 返回 list[tuple];转二维 list 并规范化空值
     rows = [[_to_jsonable(v) for v in row] for row in df.rows()]
     return rows, row_count

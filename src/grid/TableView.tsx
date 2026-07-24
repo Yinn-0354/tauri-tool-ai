@@ -53,6 +53,10 @@ const TableView = forwardRef<TableViewHandle, TableViewProps>(function TableView
     () => new Map()
   );
 
+  // 服务端排序状态:点列头切换。社区版 infinite 不自动透传,手动重设 datasource 触发重拉。
+  const [sortCol, setSortCol] = useState<string | null>(null);
+  const [sortAsc, setSortAsc] = useState(true);
+
   // CommitDetailModal 状态
   const [modalOpen, setModalOpen] = useState(false);
   const [modalRevision, setModalRevision] = useState<string | null>(null);
@@ -67,7 +71,7 @@ const TableView = forwardRef<TableViewHandle, TableViewProps>(function TableView
       headerName: c.name,
       minWidth: 120,
       resizable: true,
-      sortable: false, // 社区版 infinite 不支持服务端排序透传,先禁用排序 UI
+      sortable: true, // 开启排序 UI;实际排序由 onSortChanged 拦截走后端(社区版 infinite 不自动透传)
     }));
     if (blameLoaded) {
       const blameCol: ColDef = {
@@ -87,9 +91,24 @@ const TableView = forwardRef<TableViewHandle, TableViewProps>(function TableView
   }, [columns, blameLoaded]);
 
   const datasource = useMemo(
-    () => buildDatasource({ backendUrl, tableId, rowCount, columns }),
-    [backendUrl, tableId, rowCount, columns]
+    () => buildDatasource({ backendUrl, tableId, rowCount, columns, sortCol, sortAsc }),
+    [backendUrl, tableId, rowCount, columns, sortCol, sortAsc]
   );
+
+  // ag-Grid 列头排序变化:infinite 模式下需手动把排序状态转成 sortCol/sortAsc 并重设 datasource。
+  // 取第一个有 sort 的列(单列排序)。getColumnState 每列含 sort: 'asc'|'desc'|null。
+  const onSortChanged = useCallback(() => {
+    const cols = gridRef.current?.api?.getColumnState() ?? [];
+    const sorted = cols.find((c) => c.sort);
+    if (sorted) {
+      setSortCol(sorted.colId);
+      setSortAsc(sorted.sort === "asc");
+    } else {
+      setSortCol(null);
+      setSortAsc(true);
+    }
+    // datasource 因 sortCol/sortAsc 变化而重建(useMemo 依赖),ag-Grid 检测到新 datasource 会自动刷新。
+  }, []);
 
   // 全量 blame:拉一次,按 lineNumber 缓存到组件 state + 写回 store 元信息。
   const loadBlame = useCallback(async () => {
@@ -191,6 +210,7 @@ const TableView = forwardRef<TableViewHandle, TableViewProps>(function TableView
           maxBlocksInCache={10}
           defaultColDef={{ resizable: true }}
           context={{ blameByLine, openCommitDetail }}
+          onSortChanged={onSortChanged}
         />
       </div>
 
