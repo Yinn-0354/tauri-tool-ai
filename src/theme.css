@@ -35,7 +35,8 @@
   --font-mono: "IBM Plex Mono", ui-monospace, monospace;
 }
 
-/* 浅色主题:覆盖颜色变量(字体跨主题一致,不覆盖)。电石绿 accent 保留,亮底透明度略提以可见。 */
+/* 浅色主题:覆盖颜色变量(字体跨主题一致,不覆盖)。
+   accent 加深为 #5a7d1f(电石绿在白底需加深保证对比度,全局生效含图标/角标/激活态)。 */
 [data-theme="light"] {
   --bg: #ffffff;
   --bg-panel: #f7f8f9;
@@ -48,9 +49,9 @@
   --text-muted: #5a636b;
   --text-dim: #8a939a;
 
-  --accent: #c8e663;
-  --accent-soft: rgba(200, 230, 99, 0.18);
-  --accent-dim: #a8c450;
+  --accent: #5a7d1f;
+  --accent-soft: rgba(90, 125, 31, 0.14);
+  --accent-dim: #b7ce8a;
 
   --danger: #d64545;
   --warn: #c77d1f;

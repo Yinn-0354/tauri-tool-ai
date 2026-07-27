@@ -215,7 +215,7 @@ export default function App() {
   // antd token 不吃 CSS 变量字符串,需在 JS 维护两套与 theme.css 对齐。字体/圆角跨主题不变。
   const antdToken =
     theme === "light"
-      ? { colorPrimary: "#c8e663", colorBgBase: "#ffffff", colorTextBase: "#1a1f23" }
+      ? { colorPrimary: "#5a7d1f", colorBgBase: "#ffffff", colorTextBase: "#1a1f23" }
       : { colorPrimary: "#c8e663", colorBgBase: "#0e1113", colorTextBase: "#e7eaec" };
 
   return (
