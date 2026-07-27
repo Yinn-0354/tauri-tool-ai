@@ -22,6 +22,8 @@ import { useTableStore } from "../store/tableStore";
 import CommitDetailModal from "../components/CommitDetailModal";
 
 interface TableViewProps {
+  /** 本标签页 id(用于从 store 取/存该 tab 的 dump 态)。 */
+  tabId: string;
   backendUrl: string;
   tableId: string;
   rowCount: number;
@@ -73,6 +75,7 @@ export interface TableViewHandle {
  */
 const TableView = forwardRef<TableViewHandle, TableViewProps>(function TableView(
   {
+    tabId,
     backendUrl,
     tableId,
     rowCount,
@@ -87,27 +90,36 @@ const TableView = forwardRef<TableViewHandle, TableViewProps>(function TableView
   const gridRef = useRef<AgGridReact>(null);
   // ag-Grid 外层容器(带 tt-grid 类),用于切换 tt-has-frozen-cols 标记类
   const gridContainerRef = useRef<HTMLDivElement>(null);
+
+  // ── 从 store 恢复该 tab 的 dump 态作为 useState 初值(切 tab remount 时复原) ──
+  const initialTab = useTableStore.getState().tabs[tabId];
   const [blameByLine, setBlameByLine] = useState<Map<number, BlameLineInfo>>(
-    () => new Map()
+    () => new Map(initialTab?.blameByLine ?? [])
   );
 
   // 服务端排序状态:点列头切换。社区版 infinite 不自动透传,手动重设 datasource 触发重拉。
-  const [sortCol, setSortCol] = useState<string | null>(null);
-  const [sortAsc, setSortAsc] = useState(true);
+  const [sortCol, setSortCol] = useState<string | null>(initialTab?.sortCol ?? null);
+  const [sortAsc, setSortAsc] = useState<boolean>(initialTab?.sortAsc ?? true);
 
   // CommitDetailModal 状态
   const [modalOpen, setModalOpen] = useState(false);
   const [modalRevision, setModalRevision] = useState<string | null>(null);
 
-  // 查找命中:rowIndex → 命中列集合(用 Set 便于 cellClassRules 判定)。
-  const [hits, setHits] = useState<Map<number, Set<number>>>(() => new Map());
+  // 查找命中:rowIndex → 命中列集合(用 Set 便于 cellClassRules 判定)。从 dump 恢复。
+  const [hits, setHits] = useState<Map<number, Set<number>>>(
+    () => new Map((initialTab?.hits ?? []).map(([r, cols]) => [r, new Set(cols)]))
+  );
 
   // store:blame 状态(由 Toolbar 触发,此处执行 + 写回)
   const setBlame = useTableStore((s) => s.setBlame);
   const setBlameLoading = useTableStore((s) => s.setBlameLoading);
-  // store:列筛选状态(工具栏开关 + 表头漏斗读写)
-  const filterEnabled = useTableStore((s) => s.filterEnabled);
-  const filters = useTableStore((s) => s.filters);
+  // store:列筛选状态(读活动 tab;本组件只挂载在活动 tab,故活动 tab = 本 tab)
+  const filterEnabled = useTableStore(
+    (s) => (s.activeTabId ? s.tabs[s.activeTabId]?.filterEnabled ?? true : true)
+  );
+  const filters = useTableStore(
+    (s) => (s.activeTabId ? s.tabs[s.activeTabId]?.filters ?? {} : {})
+  ) as Record<string, string[]>;
   const setFilter = useTableStore((s) => s.setFilter);
   const clearFilter = useTableStore((s) => s.clearFilter);
   const setHasFrozen = useTableStore((s) => s.setHasFrozen);
@@ -191,7 +203,10 @@ const TableView = forwardRef<TableViewHandle, TableViewProps>(function TableView
   // 语义:冻结至此行 = 该行及以上所有行钉在顶部(与「冻结至此列」对称)。
   // 大表下行数过多会卡,设上限保护(超过则不冻,由调用方提示)。
   const FREEZE_ROW_MAX = 200;
-  const [pinnedTopRows, setPinnedTopRows] = useState<Record<string, unknown>[]>([]);
+  // 从 dump 恢复冻结行(切 tab 复原;初值为该 tab 卸载前 dump 的 pinnedTopRows)。
+  const [pinnedTopRows, setPinnedTopRows] = useState<Record<string, unknown>[]>(
+    () => initialTab?.pinnedTopRows ?? []
+  );
   // 已冻结到顶部的行数(= pinnedTopRowData 行数)。datasource 据此偏移跳过已冻结行,
   // blame/高亮/jump 据此把 grid 行号映射回真实数据行号。frozenCount=0 时无偏移,行为同未冻结。
   const frozenCount = pinnedTopRows.length;
@@ -228,14 +243,37 @@ const TableView = forwardRef<TableViewHandle, TableViewProps>(function TableView
     // datasource 因 sortCol/sortAsc 变化而重建(useMemo 依赖),ag-Grid 检测到新 datasource 会自动刷新。
   }, []);
 
-  // 首次数据渲染后,按内容自动适配列宽(只对数据列,排除 __blame pinned gutter)。
-  // infinite 模式 autoSize 只基于已加载的行(首块 100 行),给一个合理默认宽;
-  // 用户滚动加载更多后不会自动重算,但可双击表头边重新 autoSize 单列(suppressAutoSize:false)。
+  // 首次数据渲染后:若有 dump 恢复的列宽/排序/冻结列 → 复原;否则按内容自动适配列宽。
+  // infinite 模式 autoSize 只基于已加载的行(首块 100 行),给一个合理默认宽。
+  // 复原列宽用 applyColumnState(按 colId 匹配,列结构变时多余/缺失安全忽略);
+  // 复原滚动用 DOM(.ag-body-viewport 的 scrollTop/scrollLeft,绕开 ag-grid API 类型);
+  // 复原冻结列按 initialTab.frozenColCount 重新 pin + 加容器标记类。
   const onFirstDataRendered = useCallback(() => {
     const api = gridRef.current?.api;
     if (!api) return;
-    const dataColIds = columns.map((c) => c.name);
-    api.autoSizeColumns(dataColIds, false);
+    const restoredCols = initialTab?.columnState;
+    if (restoredCols && restoredCols.length > 0) {
+      api.applyColumnState({ state: restoredCols as never, applyOrder: true });
+    } else {
+      const dataColIds = columns.map((c) => c.name);
+      api.autoSizeColumns(dataColIds, false);
+    }
+    // 复原冻结列
+    const frz = initialTab?.frozenColCount ?? 0;
+    if (frz > 0) {
+      const dataCols = columns.map((c) => c.name);
+      dataCols.forEach((c, i) => api.setColumnPinned(c, i < frz ? "left" : null));
+      gridContainerRef.current?.classList.add("tt-has-frozen-cols");
+    }
+    // 复原滚动位置(DOM,ag-grid 中心滚动容器 .ag-body-viewport)
+    if (initialTab?.scroll) {
+      const vp = gridContainerRef.current?.querySelector<HTMLElement>(".ag-body-viewport");
+      if (vp) {
+        vp.scrollTop = initialTab.scroll.topRowIndex * 26;
+        vp.scrollLeft = initialTab.scroll.leftPx;
+      }
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [columns]);
 
   // 复制文本到剪贴板(优先 navigator.clipboard,回退 execCommand)
@@ -261,7 +299,8 @@ const TableView = forwardRef<TableViewHandle, TableViewProps>(function TableView
   // (blame 列恒在 pinned-left,需此类区分「只有 blame」与「blame+用户冻结列」两种状态)。
   // frozenColCount 记录已冻结的数据列数(0=无冻结),供右键菜单判断「该列已冻结→显示解冻」
   // 及工具栏「一键清空冻结」是否可点。
-  const [frozenColCount, setFrozenColCount] = useState(0);
+  // 从 dump 恢复列冻结数(切 tab 复原;onFirstDataRendered 据此重新 pin 列 + 加容器类)。
+  const [frozenColCount, setFrozenColCount] = useState(initialTab?.frozenColCount ?? 0);
   const freezeColumn = useCallback((colId: string) => {
     const api = gridRef.current?.api;
     if (!api) return;
@@ -485,20 +524,44 @@ const TableView = forwardRef<TableViewHandle, TableViewProps>(function TableView
     setHasFrozen(frozenColCount > 0 || pinnedTopRows.length > 0);
   }, [frozenColCount, pinnedTopRows.length, setHasFrozen]);
 
-  // 切换文件(tableId 变)时清空冻结(列+行)与查找高亮:冻结绑定具体文件,
-  // 残留会导致新文件的 datasource 偏移错乱、列 pin 错位、高亮错位。
+  // 多 tab:切 tab 时 App 用 key=tabId remount 本组件,旧实例卸载。卸载前(cleanup)dump
+  // 6 个 local 态 + ag-grid 列宽/排序 + 滚动位置到 store 对应 tab,切回复原。React 先跑 effect
+  // cleanup 再卸载 DOM/ref,故 gridRef.current.api 此时仍可用。
+  // 用 ref 持最新 local state(cleanup 闭包只捕获 mount 时 ref 对象,读 ref.current 得最新值,
+  // 避免 stale closure:依赖 [tabId] 不变,effect 只注册一次,cleanup 在卸载时跑)。
+  const dumpStateRef = useRef({ blameByLine, sortCol, sortAsc, hits, pinnedTopRows, frozenColCount });
+  dumpStateRef.current = { blameByLine, sortCol, sortAsc, hits, pinnedTopRows, frozenColCount };
   useEffect(() => {
-    setPinnedTopRows([]);
-    setFrozenColCount(0);
-    gridContainerRef.current?.classList.remove("tt-has-frozen-cols");
-    setHits(new Map());
-  }, [tableId]);
+    return () => {
+      const s = dumpStateRef.current;
+      const api = gridRef.current?.api;
+      const columnState = (api?.getColumnState() as never) ?? null;
+      // 滚动位置:读 ag-grid 中心滚动容器 .ag-body-viewport 的 scrollTop/scrollLeft(DOM,绕开 API 类型)。
+      // topRowIndex 由像素估(行高 26);恢复时按像素设回,足够复原。
+      const vp = gridContainerRef.current?.querySelector<HTMLElement>(".ag-body-viewport");
+      let scroll: { topRowIndex: number; leftPx: number } | null = null;
+      if (vp) {
+        scroll = { topRowIndex: Math.floor(vp.scrollTop / 26), leftPx: vp.scrollLeft };
+      }
+      useTableStore.getState().dumpTableViewState(tabId, {
+        blameByLine: Array.from(s.blameByLine.entries()),
+        sortCol: s.sortCol,
+        sortAsc: s.sortAsc,
+        hits: Array.from(s.hits.entries()).map(([r, cols]) => [r, Array.from(cols)]),
+        pinnedTopRows: s.pinnedTopRows,
+        frozenColCount: s.frozenColCount,
+        columnState,
+        scroll,
+      });
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [tabId]);
 
   // 列筛选变化时清空冻结行与查找高亮(按用户决策:应用任何列筛选自动清空冻结行)。
   // 冻结行基于筛选前行号,筛选后行集合变了,保留冻结行会与筛选结果语义冲突;
   // 查找高亮按 __rowIndex 定位,筛选后行号空间变,旧 hits 失效,一并清空。
   // 列冻结保留(筛选不改列结构),不动 frozenColCount。
-  // filters 是 store 对象,引用变化即触发(每列 set/clear 都生成新对象)。
+  // filters 从活动 tab 读,引用变化即触发(每列 set/clear 都生成新对象)。
   useEffect(() => {
     setPinnedTopRows([]);
     setHits(new Map());

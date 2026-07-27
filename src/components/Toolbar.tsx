@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { Button, Tooltip, Input, Spin, Dropdown } from "antd";
 import type { MenuProps } from "antd";
 import {
@@ -54,19 +54,21 @@ export default function Toolbar({
   onClearFrozen,
   opening,
 }: ToolbarProps) {
-  const tableId = useTableStore((s) => s.tableId);
-  const filePath = useTableStore((s) => s.filePath);
-  const rowCount = useTableStore((s) => s.rowCount);
-  const columns = useTableStore((s) => s.columns);
-  const blameLoading = useTableStore((s) => s.blameLoading);
-  const blameLoaded = useTableStore((s) => s.blameLoaded);
-  const blameCount = useTableStore((s) => s.blameCount);
-  const blameError = useTableStore((s) => s.blameError);
-  const filterEnabled = useTableStore((s) => s.filterEnabled);
-  const filters = useTableStore((s) => s.filters);
+  // 多 tab:所有表格元信息/UI 状态从活动 tab 读取(Toolbar 永远作用于活动 tab)。
+  const tab = useTableStore((s) => (s.activeTabId ? s.tabs[s.activeTabId] ?? null : null));
+  const tableId = tab?.tableId ?? null;
+  const filePath = tab?.filePath ?? null;
+  const rowCount = tab?.rowCount ?? null;
+  const columns = tab?.columns ?? [];
+  const blameLoading = tab?.blameLoading ?? false;
+  const blameLoaded = tab?.blameLoaded ?? false;
+  const blameCount = tab?.blameCount ?? 0;
+  const blameError = tab?.blameError ?? null;
+  const filterEnabled = tab?.filterEnabled ?? true;
+  const filters = tab?.filters ?? {};
+  const hasFrozen = tab?.hasFrozen ?? false;
   const setFilterEnabled = useTableStore((s) => s.setFilterEnabled);
   const clearAllFilters = useTableStore((s) => s.clearAllFilters);
-  const hasFrozen = useTableStore((s) => s.hasFrozen);
 
   const hasTable = tableId !== null;
   // 已筛选的列数(用于开关按钮角标)
@@ -88,6 +90,15 @@ export default function Toolbar({
   const [matches, setMatches] = useState<SearchMatch[]>([]);
   const [total, setTotal] = useState<number>(0);
   const [searchError, setSearchError] = useState<string | null>(null);
+
+  // 切 tab(活动 tab 的 tableId 变)时清空查找 UI,避免上个 tab 的命中结果残留。
+  useEffect(() => {
+    setMatches([]);
+    setTotal(0);
+    setSearchError(null);
+    setQuery("");
+    setSearchOpen(false);
+  }, [tableId]);
 
   const doSearch = async () => {
     const q = query.trim();

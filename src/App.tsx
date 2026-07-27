@@ -4,10 +4,11 @@ import { useEffect, useCallback, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import { ConfigProvider, theme as antdTheme, App as AntApp } from "antd";
-import { useTableStore, type TableColumnMeta } from "./store/tableStore";
+import { useTableStore, useActiveTab, type TableColumnMeta } from "./store/tableStore";
 import { useThemeStore } from "./store/themeStore";
 import Sidebar from "./components/Sidebar";
 import Toolbar from "./components/Toolbar";
+import TabBar from "./components/TabBar";
 import EmptyState from "./components/EmptyState";
 import TableView, { type TableViewHandle } from "./grid/TableView";
 import OpenConfigModal, { type TableOpenConfig } from "./components/OpenConfigModal";
@@ -15,32 +16,27 @@ import OpenConfigModal, { type TableOpenConfig } from "./components/OpenConfigMo
 /**
  * Carbon Terminal 主题根布局。
  *
- * 结构:Sidebar(56px) + 右侧内容区(flex 列:Toolbar 44px + 主区 flex 1)。
+ * 结构:Sidebar(56px) + 右侧内容区(flex 列:Toolbar 44px + TabBar 34px + 主区 flex 1)。
  * 铁律(需求7):根容器 100vh + overflow:hidden,所有外层 overflow:hidden + min-height:0,
  * 仅 ag-Grid 内部滚动。
  *
+ * 多标签:同时可打开多个表格,各 tab 独立保存状态(切 tab dump 到 store,切回复原)。
+ * 只挂载活动 tab 的 TableView(key=tabId remount),非活动 tab 卸载,内存只占 1 份 ag-Grid。
  * 打开文件流程:openDialog → GET /api/table/config 预填 → OpenConfigModal →
- * POST /api/table/open(带 headerRow/skipRows)+ POST /api/table/config(记忆)→ setTable + setHeaderSkip。
+ * POST /api/table/open(带 headerRow/skipRows)+ POST /api/table/config(记忆)→ openTab(新 tab 或激活已有)。
  */
 export default function App() {
   const backendUrl = useTableStore((s) => s.backendUrl);
-  const tableId = useTableStore((s) => s.tableId);
-  const rowCount = useTableStore((s) => s.rowCount);
-  const columns = useTableStore((s) => s.columns);
-  const filePath = useTableStore((s) => s.filePath);
-  const headerRow = useTableStore((s) => s.headerRow);
-  const skipRows = useTableStore((s) => s.skipRows);
-  const loading = useTableStore((s) => s.loading);
-  const error = useTableStore((s) => s.error);
-  const blameLoaded = useTableStore((s) => s.blameLoaded);
-
+  const activeTab = useActiveTab();
+  const openTab = useTableStore((s) => s.openTab);
   const setBackendUrl = useTableStore((s) => s.setBackendUrl);
-  const setTable = useTableStore((s) => s.setTable);
   const setStatus = useTableStore((s) => s.setStatus);
   const setError = useTableStore((s) => s.setError);
-  const setLoading = useTableStore((s) => s.setLoading);
 
   const tableViewRef = useRef<TableViewHandle>(null);
+
+  // 打开文件进行中(App local,进度条 + Toolbar opening;不进 store,因打开是跨 tab 的瞬时动作)
+  const [opening, setOpening] = useState(false);
 
   // OpenConfigModal 状态
   const [configOpen, setConfigOpen] = useState(false);
@@ -58,6 +54,7 @@ export default function App() {
   }, [setBackendUrl, setStatus, setError]);
 
   // 真正执行打开:带 headerRow/skipRows 调 POST /api/table/open,再 POST /api/table/config 记忆。
+  // 成功后 openTab(同 path 激活已有 tab 并更新元信息;否则新建并激活)。
   const doOpen = useCallback(
     async (path: string, cfg: TableOpenConfig) => {
       if (!backendUrl) {
@@ -65,7 +62,7 @@ export default function App() {
         return;
       }
       const base = backendUrl.replace(/\/$/, "");
-      setLoading(true);
+      setOpening(true);
       setError(null);
       try {
         const resp = await fetch(`${base}/api/table/open`, {
@@ -83,11 +80,11 @@ export default function App() {
           rowCount: number;
           columns: TableColumnMeta[];
         };
-        setTable({
+        openTab({
+          filePath: path,
           tableId: data.tableId,
           rowCount: data.rowCount,
           columns: data.columns,
-          filePath: path,
           headerRow: cfg.headerRow,
           skipRows: cfg.skipRows,
         });
@@ -111,11 +108,25 @@ export default function App() {
       } catch (e) {
         setError(String(e));
       } finally {
-        setLoading(false);
+        setOpening(false);
       }
     },
-    [backendUrl, setTable, setStatus, setError, setLoading]
+    [backendUrl, openTab, setStatus, setError]
   );
+
+  // 切到 stale tab(重启恢复的 tab,tableId=null 未校验)时自动重新打开拿新 tableId。
+  // 用活动 tab 的 id/stale 作依赖,避免 activeTab 对象引用变化频繁触发。
+  const activeId = activeTab?.id;
+  const activeStale = activeTab?.stale;
+  useEffect(() => {
+    if (activeTab && activeStale && backendUrl && !opening) {
+      void doOpen(activeTab.filePath, {
+        headerRow: activeTab.headerRow,
+        skipRows: activeTab.skipRows,
+      });
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeId, activeStale, backendUrl, opening, doOpen]);
 
   // 打开本地文件:openDialog → GET /api/table/config 预填 → 弹 OpenConfigModal。
   const handleOpen = useCallback(async () => {
@@ -129,12 +140,10 @@ export default function App() {
         multiple: false,
         directory: false,
       });
-      // openDialog 在用户取消时返回 null(单选)。
       if (selected === null) {
         return;
       }
       const path = selected;
-      // 拉取已记忆配置预填(失败按无记录处理,不阻断)。
       const base = backendUrl.replace(/\/$/, "");
       let initial: TableOpenConfig | null = null;
       try {
@@ -159,7 +168,6 @@ export default function App() {
     }
   }, [backendUrl, setError]);
 
-  // OpenConfigModal 提交(用户配置好后真正打开)。
   const onConfigSubmit = useCallback(
     (cfg: TableOpenConfig) => {
       setConfigOpen(false);
@@ -168,7 +176,6 @@ export default function App() {
     [doOpen, configPath]
   );
 
-  // OpenConfigModal 跳过配置直接打开(用 initial 或默认 null/[])。
   const onConfigSkip = useCallback(() => {
     setConfigOpen(false);
     const cfg: TableOpenConfig = {
@@ -182,37 +189,29 @@ export default function App() {
     setConfigOpen(false);
   }, []);
 
+  // 5 个 imperative handle:只挂载活动 tab,单 ref 永远指向活动 tab 的 handle(key=tabId remount)。
   const handleFetchBlame = useCallback(() => {
     tableViewRef.current?.loadBlame();
   }, []);
-
   const handleExportCsv = useCallback(() => {
     tableViewRef.current?.exportCsv();
   }, []);
-
-  // 查找:调 tableViewRef.current.search(query)。
-  const handleSearch = useCallback(
-    async (query: string) => {
-      return tableViewRef.current?.search(query) ?? { matches: [], total: 0 };
-    },
-    []
-  );
-
-  // 跳转:调 tableViewRef.current.jumpTo(rowIndex, colIndex)。
+  const handleSearch = useCallback(async (query: string) => {
+    return tableViewRef.current?.search(query) ?? { matches: [], total: 0 };
+  }, []);
   const handleJumpTo = useCallback((rowIndex: number, colIndex: number) => {
     tableViewRef.current?.jumpTo(rowIndex, colIndex);
   }, []);
-
-  // 一键清空冻结(列+行):调 tableViewRef.current.clearAllFrozen()。
   const handleClearFrozen = useCallback(() => {
     tableViewRef.current?.clearAllFrozen();
   }, []);
 
-  const ready = backendUrl !== null && tableId !== null && rowCount !== null;
+  const ready = activeTab != null && activeTab.tableId != null;
+  const error = activeTab?.error ?? null;
+  const loading = opening || (activeTab?.loading ?? false);
 
   // 主题:驱动 antd ConfigProvider 的 algorithm + token(CSS 变量由 themeStore 模块副作用应用到 <html>)。
   const theme = useThemeStore((s) => s.theme);
-  // antd token 不吃 CSS 变量字符串,需在 JS 维护两套与 theme.css 对齐。字体/圆角跨主题不变。
   const antdToken =
     theme === "light"
       ? { colorPrimary: "#7da630", colorBgBase: "#ffffff", colorTextBase: "#1a1f23" }
@@ -261,7 +260,10 @@ export default function App() {
               opening={loading}
             />
 
-            {/* 顶部 2px 进度条:仅在打开解析中(loading)显示,不阻断布局,不产生额外滚动条 */}
+            {/* 标签栏:仅在有 tab 时显示。切换/关闭/新开。 */}
+            <TabBar onOpen={handleOpen} />
+
+            {/* 顶部 2px 进度条:仅在打开解析中显示 */}
             {loading && (
               <div
                 style={{
@@ -273,7 +275,7 @@ export default function App() {
               />
             )}
 
-            {/* error 横幅:固定高度,不撑高 */}
+            {/* error 横幅:显示活动 tab 的错误 */}
             {error && (
               <div
                 style={{
@@ -319,17 +321,19 @@ export default function App() {
                 background: "var(--bg)",
               }}
             >
-              {ready ? (
+              {ready && activeTab ? (
                 <TableView
+                  key={activeTab.id}
                   ref={tableViewRef}
+                  tabId={activeTab.id}
                   backendUrl={backendUrl!}
-                  tableId={tableId!}
-                  rowCount={rowCount!}
-                  columns={columns}
-                  filePath={filePath!}
-                  headerRow={headerRow}
-                  skipRows={skipRows}
-                  blameLoaded={blameLoaded}
+                  tableId={activeTab.tableId!}
+                  rowCount={activeTab.rowCount!}
+                  columns={activeTab.columns}
+                  filePath={activeTab.filePath}
+                  headerRow={activeTab.headerRow}
+                  skipRows={activeTab.skipRows}
+                  blameLoaded={activeTab.blameLoaded}
                 />
               ) : (
                 <EmptyState onOpen={handleOpen} loading={loading} />
