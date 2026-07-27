@@ -8,7 +8,12 @@ import {
   useImperativeHandle,
 } from "react";
 import { AgGridReact } from "@ag-grid-community/react";
-import type { ColDef, ICellRendererParams, CellClassParams } from "@ag-grid-community/core";
+import type {
+  ColDef,
+  ICellRendererParams,
+  CellClassParams,
+  CellContextMenuEvent,
+} from "@ag-grid-community/core";
 import { buildDatasource } from "./datasource";
 import { fetchBlame, authorColor, type BlameLineInfo } from "./blame";
 import type { TableColumnMeta } from "../store/tableStore";
@@ -77,6 +82,8 @@ const TableView = forwardRef<TableViewHandle, TableViewProps>(function TableView
   ref
 ) {
   const gridRef = useRef<AgGridReact>(null);
+  // ag-Grid 外层容器(带 tt-grid 类),用于切换 tt-has-frozen-cols 标记类
+  const gridContainerRef = useRef<HTMLDivElement>(null);
   const [blameByLine, setBlameByLine] = useState<Map<number, BlameLineInfo>>(
     () => new Map()
   );
@@ -125,6 +132,7 @@ const TableView = forwardRef<TableViewHandle, TableViewProps>(function TableView
       resizable: true,
       sortable: true, // 开启排序 UI;实际排序由 onSortChanged 拦截走后端(社区版 infinite 不自动透传)
       cellClassRules,
+      cellClass: "tt-data-cell", // 数据列标记类:冻结列样式只命中此类的单元格,排除 blame gutter
     }));
     if (blameLoaded) {
       const blameCol: ColDef = {
@@ -172,6 +180,114 @@ const TableView = forwardRef<TableViewHandle, TableViewProps>(function TableView
     }
     // datasource 因 sortCol/sortAsc 变化而重建(useMemo 依赖),ag-Grid 检测到新 datasource 会自动刷新。
   }, []);
+
+  // 首次数据渲染后,按内容自动适配列宽(只对数据列,排除 __blame pinned gutter)。
+  // infinite 模式 autoSize 只基于已加载的行(首块 100 行),给一个合理默认宽;
+  // 用户滚动加载更多后不会自动重算,但可双击表头边重新 autoSize 单列(suppressAutoSize:false)。
+  const onFirstDataRendered = useCallback(() => {
+    const api = gridRef.current?.api;
+    if (!api) return;
+    const dataColIds = columns.map((c) => c.name);
+    api.autoSizeColumns(dataColIds, false);
+  }, [columns]);
+
+  // 复制文本到剪贴板(优先 navigator.clipboard,回退 execCommand)
+  const copyText = useCallback(async (text: string) => {
+    try {
+      await navigator.clipboard.writeText(text);
+    } catch {
+      const ta = document.createElement("textarea");
+      ta.value = text;
+      document.body.appendChild(ta);
+      ta.select();
+      try {
+        document.execCommand("copy");
+      } catch {
+        /* 忽略 */
+      }
+      document.body.removeChild(ta);
+    }
+  }, []);
+
+  // 列冻结:冻结至此列 = 该列及左边所有数据列 pin 到左侧(其余取消 pin)。
+  // 同时给 grid 根元素加 tt-has-frozen-cols 类,CSS 据此给冻结列上底色
+  // (blame 列恒在 pinned-left,需此类区分「只有 blame」与「blame+用户冻结列」两种状态)。
+  const freezeColumn = useCallback((colId: string) => {
+    const api = gridRef.current?.api;
+    if (!api) return;
+    const dataCols = columns.map((c) => c.name);
+    const idx = dataCols.indexOf(colId);
+    dataCols.forEach((c, i) => api.setColumnPinned(c, i <= idx ? "left" : null));
+    // 给外层容器加 tt-has-frozen-cols,CSS 据此给冻结列(含 blame gutter)上底色
+    gridContainerRef.current?.classList.add("tt-has-frozen-cols");
+  }, [columns]);
+
+  // 自绘右键菜单状态:右键单元格时记录坐标 + 单元格信息,渲染浮动菜单。
+  // ag-Grid 社区版无内置右键菜单(企业版才有),用 onCellContextMenu + 自绘菜单实现。
+  const [ctxMenu, setCtxMenu] = useState<{
+    x: number;
+    y: number;
+    colId: string | null;
+    rowIndex: number | null;
+    value: string;
+  } | null>(null);
+
+  // 行冻结:用 pinnedTopRowData prop(社区版支持),受控 state。
+  // 语义:冻结至此行 = 该行及以上所有行钉在顶部(与「冻结至此列」对称)。
+  // 大表下行数过多会卡,设上限保护(超过则不冻,提示由调用方处理)。
+  const FREEZE_ROW_MAX = 200;
+  const [pinnedTopRows, setPinnedTopRows] = useState<Record<string, unknown>[]>([]);
+
+  const freezeRow = useCallback(async (rowIndex: number): Promise<boolean> => {
+    const api = gridRef.current?.api;
+    if (!api) return false;
+    if (rowIndex >= FREEZE_ROW_MAX) return false; // 行数过多,调用方提示
+    // 拉该行及以上所有行(0..rowIndex)。优先用已加载的,缺的从后端拉整段。
+    const rows: Record<string, unknown>[] = [];
+    // 简化:直接从后端拉 0..rowIndex+1 整段(行数受 FREEZE_ROW_MAX 限制,可控)
+    const base = backendUrl.replace(/\/$/, "");
+    const skipParam = skipRows.length > 0
+      ? skipRows.map((s) => `${s[0]}-${s[1]}`).join(",")
+      : "";
+    let url = `${base}/api/table/data?tableId=${encodeURIComponent(tableId)}&startRow=0&endRow=${rowIndex + 1}`;
+    if (headerRow !== null) url += `&headerRow=${headerRow}`;
+    if (skipParam) url += `&skipRows=${encodeURIComponent(skipParam)}`;
+    try {
+      const resp = await fetch(url);
+      const d = (await resp.json()) as { rows: unknown[][] };
+      for (const arr of d.rows) {
+        const obj: Record<string, unknown> = {};
+        columns.forEach((c, i) => {
+          obj[c.name] = arr[i];
+        });
+        rows.push(obj);
+      }
+    } catch {
+      return false;
+    }
+    if (rows.length === 0) return false;
+    setPinnedTopRows(rows);
+    return true;
+  }, [backendUrl, tableId, headerRow, skipRows, columns]);
+
+  // 右键单元格:阻止浏览器原生菜单,记录坐标+单元格信息,渲染自绘菜单(社区版无内置右键菜单)。
+  const onCellContextMenu = useCallback((params: CellContextMenuEvent) => {
+    const ev = params.event as MouseEvent | undefined;
+    ev?.preventDefault();
+    const colId = params.column?.getColId() ?? null;
+    const isBlame = colId === "__blame";
+    setCtxMenu({
+      x: ev?.clientX ?? 0,
+      y: ev?.clientY ?? 0,
+      colId: isBlame ? null : colId,
+      rowIndex: params.node?.rowIndex ?? null,
+      value: params.value === null || params.value === undefined ? "" : String(params.value),
+    });
+  }, []);
+
+  // 关闭右键菜单(点菜单项后或点别处)
+  const closeCtxMenu = useCallback(() => setCtxMenu(null), []);
+
 
   // 全量 blame:拉一次,按 lineNumber 缓存到组件 state + 写回 store 元信息。
   const loadBlame = useCallback(async () => {
@@ -329,8 +445,12 @@ const TableView = forwardRef<TableViewHandle, TableViewProps>(function TableView
   return (
     <div style={{ flex: 1, minHeight: 0, overflow: "hidden", display: "flex", position: "relative" }}>
       <div
+        ref={gridContainerRef}
         className="ag-theme-quartz tt-grid"
         style={{ flex: 1, minHeight: 0, width: "100%" }}
+        // 阻止 ag-Grid 区域的浏览器原生右键菜单(自绘菜单由 onCellContextMenu 触发)。
+        // 必须在容器原生 contextmenu 事件上 preventDefault,ag-Grid 合成事件的 preventDefault 拦不住原生菜单。
+        onContextMenu={(e) => e.preventDefault()}
       >
         <AgGridReact
           ref={gridRef}
@@ -339,11 +459,98 @@ const TableView = forwardRef<TableViewHandle, TableViewProps>(function TableView
           datasource={datasource}
           cacheBlockSize={100}
           maxBlocksInCache={10}
-          defaultColDef={{ resizable: true }}
+          defaultColDef={{
+            resizable: true,
+            minWidth: 80,
+            maxWidth: 600,
+            suppressAutoSize: false, // 双击表头边可 autoSize 单列(社区版默认支持)
+          }}
           context={{ blameByLine, openCommitDetail }}
           onSortChanged={onSortChanged}
+          onFirstDataRendered={onFirstDataRendered}
+          onCellContextMenu={onCellContextMenu}
+          pinnedTopRowData={pinnedTopRows}
         />
       </div>
+
+      {/* 自绘右键菜单(社区版无内置右键菜单)。点遮罩或菜单项关闭。 */}
+      {ctxMenu && (
+        <>
+          {/* 透明遮罩:点别处关闭菜单 */}
+          <div
+            style={{ position: "fixed", inset: 0, zIndex: 1000 }}
+            onClick={closeCtxMenu}
+            onContextMenu={(e) => { e.preventDefault(); closeCtxMenu(); }}
+          />
+          <div
+            style={{
+              position: "fixed",
+              left: ctxMenu.x,
+              top: ctxMenu.y,
+              zIndex: 1001,
+              minWidth: 160,
+              background: "var(--bg-elevated)",
+              border: "1px solid var(--border-strong)",
+              borderRadius: 6,
+              padding: 4,
+              boxShadow: "0 8px 24px rgba(0,0,0,.4)",
+              fontFamily: "var(--font-sans)",
+              fontSize: 13,
+            }}
+          >
+            <CtxItem
+              label="复制单元格"
+              disabled={ctxMenu.value === ""}
+              onClick={() => { void copyText(ctxMenu.value); closeCtxMenu(); }}
+            />
+            {ctxMenu.colId && (
+              <>
+                <CtxSep />
+                <CtxItem label="冻结至此列" onClick={() => { freezeColumn(ctxMenu.colId!); closeCtxMenu(); }} />
+              </>
+            )}
+            {ctxMenu.rowIndex !== null && (
+              <>
+                <CtxSep />
+                <CtxItem
+                  label="冻结至此行"
+                  onClick={async () => {
+                    const ok = await freezeRow(ctxMenu.rowIndex!);
+                    if (!ok) {
+                      window.alert(
+                        ctxMenu.rowIndex! >= 200
+                          ? `该行位置过深(${ctxMenu.rowIndex! + 1} 行),冻结至此行仅支持前 200 行`
+                          : "冻结至此行失败(拉取数据失败)"
+                      );
+                    }
+                    closeCtxMenu();
+                  }}
+                />
+              </>
+            )}
+            {ctxMenu.colId && ctxMenu.rowIndex !== null && (
+              <>
+                <CtxSep />
+                <CtxItem
+                  label="冻结至此行此列"
+                  onClick={async () => {
+                    freezeColumn(ctxMenu.colId!);
+                    const ok = await freezeRow(ctxMenu.rowIndex!);
+                    if (!ok) {
+                      window.alert(
+                        ctxMenu.rowIndex! >= 200
+                          ? `该行位置过深(${ctxMenu.rowIndex! + 1} 行),冻结至此行仅支持前 200 行`
+                          : "冻结至此行失败(拉取数据失败)"
+                      );
+                    }
+                    closeCtxMenu();
+                  }}
+                />
+              </>
+            )}
+          </div>
+        </>
+      )}
 
       <CommitDetailModal
         open={modalOpen}
@@ -355,5 +562,29 @@ const TableView = forwardRef<TableViewHandle, TableViewProps>(function TableView
     </div>
   );
 });
+
+/** 右键菜单项 */
+function CtxItem({ label, onClick, disabled }: { label: string; onClick: () => void; disabled?: boolean }) {
+  return (
+    <div
+      onClick={disabled ? undefined : onClick}
+      style={{
+        padding: "6px 12px",
+        cursor: disabled ? "default" : "pointer",
+        color: disabled ? "var(--text-dim)" : "var(--text)",
+        borderRadius: 4,
+        ...(disabled ? {} : { ":hover": {} }),
+      }}
+      onMouseEnter={(e) => { if (!disabled) (e.currentTarget as HTMLElement).style.background = "var(--bg-panel)"; }}
+      onMouseLeave={(e) => { (e.currentTarget as HTMLElement).style.background = "transparent"; }}
+    >
+      {label}
+    </div>
+  );
+}
+
+function CtxSep() {
+  return <div style={{ height: 1, background: "var(--border)", margin: "4px 0" }} />;
+}
 
 export default TableView;

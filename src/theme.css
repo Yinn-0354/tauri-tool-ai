@@ -159,3 +159,45 @@ body {
   background: var(--accent-soft) !important;
   box-shadow: inset 0 0 0 2px var(--accent);
 }
+
+/* ---------------------------------------------------------------------------
+ * 冻结状态视觉区分(三种):冻结列 / 冻结行 / 行列交叉区
+ * ag-Grid DOM:冻结列在 .ag-pinned-left-cols-container 内;冻结行在 .ag-floating-top 内。
+ * blame gutter 视为冻结整体的一部分:冻结行/列/交叉区样式同样作用于 blame 单元格。
+ * ------------------------------------------------------------------------- */
+
+/* 冻结列:被 pin 的列单元格 + 表头浅 accent 底;右边缘 accent-dim 竖条标识。
+ * 只在 grid 根有 tt-has-frozen-cols 类时生效(freezeColumn 加此类)。
+ * 否则 blame 列恒在 pinned-left 会被误染 —— blame 与用户冻结列视为整体,一起上底色。 */
+.ag-theme-quartz.tt-grid.tt-has-frozen-cols .ag-pinned-left-cols-container .ag-cell {
+  background: var(--accent-soft) !important;
+}
+.ag-theme-quartz.tt-grid.tt-has-frozen-cols .ag-pinned-left-cols-container .ag-header-cell {
+  background: var(--accent-soft) !important;
+}
+.ag-theme-quartz.tt-grid.tt-has-frozen-cols .ag-pinned-left-cols-container {
+  box-shadow: inset -2px 0 0 0 var(--accent-dim);
+}
+
+/* 冻结行:顶部 pinned 行(ag-floating-top)浅底 + accent 顶边。
+ * 单元格透明让容器底色透出,blame 单元格同样透明 → 整行统一浅底。 */
+.ag-theme-quartz.tt-grid .ag-floating-top {
+  background: var(--accent-soft);
+  border-bottom: 2px solid var(--accent) !important;
+}
+.ag-theme-quartz.tt-grid .ag-floating-top .ag-row,
+.ag-theme-quartz.tt-grid .ag-floating-top .ag-cell {
+  background: transparent !important;
+}
+.ag-theme-quartz.tt-grid .ag-floating-top .ag-row {
+  border-bottom: 1px solid var(--accent-dim);
+}
+
+/* 行列交叉区:既在冻结列(pinned-left)又在冻结行(floating-top)的单元格,
+ * 用更突出的 accent 边框框住(覆盖上面的透明)。包含 blame 单元格,视为整体。
+ * 只在有冻结列时生效(tt-has-frozen-cols),否则冻结行单独时 blame 不该被当交叉区。 */
+.ag-theme-quartz.tt-grid.tt-has-frozen-cols .ag-floating-top .ag-pinned-left-cols-container .ag-cell {
+  background: var(--accent-dim) !important;
+  box-shadow: inset 0 0 0 2px var(--accent);
+  font-weight: 500;
+}
