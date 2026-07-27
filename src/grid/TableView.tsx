@@ -107,7 +107,9 @@ const TableView = forwardRef<TableViewHandle, TableViewProps>(function TableView
   const cellClassRules = useMemo(
     () => ({
       "tt-hit": (params: CellClassParams) => {
-        const rowIdx = params.node?.rowIndex;
+        // 用行数据自带的真实有效行号(0-based),与 ag-Grid rowIndex(冻结后偏移)解耦。
+        // pinned 顶部行也带 __rowIndex,搜索命中冻结行时同样高亮。
+        const rowIdx = (params.data as { __rowIndex?: number } | undefined)?.__rowIndex;
         if (rowIdx === undefined || rowIdx === null) return false;
         const colSet = hits.get(rowIdx);
         if (!colSet) return false;
@@ -151,6 +153,15 @@ const TableView = forwardRef<TableViewHandle, TableViewProps>(function TableView
     return dataCols;
   }, [columns, blameLoaded, cellClassRules]);
 
+  // 冻结行:用 pinnedTopRowData prop(社区版支持),受控 state。
+  // 语义:冻结至此行 = 该行及以上所有行钉在顶部(与「冻结至此列」对称)。
+  // 大表下行数过多会卡,设上限保护(超过则不冻,由调用方提示)。
+  const FREEZE_ROW_MAX = 200;
+  const [pinnedTopRows, setPinnedTopRows] = useState<Record<string, unknown>[]>([]);
+  // 已冻结到顶部的行数(= pinnedTopRowData 行数)。datasource 据此偏移跳过已冻结行,
+  // blame/高亮/jump 据此把 grid 行号映射回真实数据行号。frozenCount=0 时无偏移,行为同未冻结。
+  const frozenCount = pinnedTopRows.length;
+
   const datasource = useMemo(
     () =>
       buildDatasource({
@@ -162,8 +173,9 @@ const TableView = forwardRef<TableViewHandle, TableViewProps>(function TableView
         sortAsc,
         headerRow,
         skipRows,
+        frozenCount,
       }),
-    [backendUrl, tableId, rowCount, columns, sortCol, sortAsc, headerRow, skipRows]
+    [backendUrl, tableId, rowCount, columns, sortCol, sortAsc, headerRow, skipRows, frozenCount]
   );
 
   // ag-Grid 列头排序变化:infinite 模式下需手动把排序状态转成 sortCol/sortAsc 并重设 datasource。
@@ -232,43 +244,45 @@ const TableView = forwardRef<TableViewHandle, TableViewProps>(function TableView
     value: string;
   } | null>(null);
 
-  // 行冻结:用 pinnedTopRowData prop(社区版支持),受控 state。
-  // 语义:冻结至此行 = 该行及以上所有行钉在顶部(与「冻结至此列」对称)。
-  // 大表下行数过多会卡,设上限保护(超过则不冻,提示由调用方处理)。
-  const FREEZE_ROW_MAX = 200;
-  const [pinnedTopRows, setPinnedTopRows] = useState<Record<string, unknown>[]>([]);
+  // 行冻结的 state 与 FREEZE_ROW_MAX 已移至 datasource 之前(供 frozenCount 偏移使用)。
 
   const freezeRow = useCallback(async (rowIndex: number): Promise<boolean> => {
     const api = gridRef.current?.api;
     if (!api) return false;
     if (rowIndex >= FREEZE_ROW_MAX) return false; // 行数过多,调用方提示
-    // 拉该行及以上所有行(0..rowIndex)。优先用已加载的,缺的从后端拉整段。
+    // 拉该行及以上所有行(真实有效行 0..rowIndex),作为 pinnedTopRowData 钉在顶部。
+    // 必须带上当前 sortCol/sortAsc,使 pinned 行与数据行同序(排序后冻结也一致)。
     const rows: Record<string, unknown>[] = [];
-    // 简化:直接从后端拉 0..rowIndex+1 整段(行数受 FREEZE_ROW_MAX 限制,可控)
     const base = backendUrl.replace(/\/$/, "");
     const skipParam = skipRows.length > 0
       ? skipRows.map((s) => `${s[0]}-${s[1]}`).join(",")
       : "";
     let url = `${base}/api/table/data?tableId=${encodeURIComponent(tableId)}&startRow=0&endRow=${rowIndex + 1}`;
+    if (sortCol) url += `&sortCol=${encodeURIComponent(sortCol)}&sortAsc=${sortAsc ? 1 : 0}`;
     if (headerRow !== null) url += `&headerRow=${headerRow}`;
     if (skipParam) url += `&skipRows=${encodeURIComponent(skipParam)}`;
     try {
       const resp = await fetch(url);
       const d = (await resp.json()) as { rows: unknown[][] };
-      for (const arr of d.rows) {
+      d.rows.forEach((arr, i) => {
         const obj: Record<string, unknown> = {};
-        columns.forEach((c, i) => {
-          obj[c.name] = arr[i];
+        columns.forEach((c, j) => {
+          obj[c.name] = arr[j];
         });
+        // pinned 行真实有效行号 = 0..rowIndex(与未冻结数据行号一致),
+        // 供 blame/高亮/提交详情统一按 __rowIndex 定位。
+        obj.__rowIndex = i;
         rows.push(obj);
-      }
+      });
     } catch {
       return false;
     }
     if (rows.length === 0) return false;
+    // setPinnedTopRows -> frozenCount 变 -> datasource 重建并偏移重拉数据行(跳过前 N 行),
+    // ag-Grid 收到新 datasource 自动刷新,无需手动 refreshCells。
     setPinnedTopRows(rows);
     return true;
-  }, [backendUrl, tableId, headerRow, skipRows, columns]);
+  }, [backendUrl, tableId, headerRow, skipRows, columns, sortCol, sortAsc]);
 
   // 右键单元格:阻止浏览器原生菜单,记录坐标+单元格信息,渲染自绘菜单(社区版无内置右键菜单)。
   const onCellContextMenu = useCallback((params: CellContextMenuEvent) => {
@@ -361,7 +375,10 @@ const TableView = forwardRef<TableViewHandle, TableViewProps>(function TableView
   const jumpTo = useCallback((rowIndex: number, colIndex?: number) => {
     const api = gridRef.current?.api;
     if (!api) return;
-    api.ensureIndexVisible(rowIndex);
+    // rowIndex 是真实有效行号(0-based,来自 search 结果);冻结 N 行后 grid 数据行从 N 开始,
+    // 故目标 grid 行号 = rowIndex + frozenCount。ensureIndexVisible 据此定位(未加载会触发拉取)。
+    const gridRow = rowIndex + frozenCount;
+    api.ensureIndexVisible(gridRow);
     // 列跳转:取该列的 colId(列名)。colIndex 相对 columns(不含 blame 列)。
     if (colIndex !== undefined && colIndex >= 0 && colIndex < columns.length) {
       const colName = columns[colIndex].name;
@@ -370,7 +387,7 @@ const TableView = forwardRef<TableViewHandle, TableViewProps>(function TableView
         api.ensureColumnVisible(col);
         try {
           // setFocusedCell 第三参数 floating 用 null(不浮动);某些行未渲染时可能抛,忽略。
-          api.setFocusedCell(rowIndex, colName, null);
+          api.setFocusedCell(gridRow, colName, null);
         } catch {
           // 行未渲染等异常忽略;高亮已由 hits + cellClassRules 提供。
         }
@@ -378,7 +395,7 @@ const TableView = forwardRef<TableViewHandle, TableViewProps>(function TableView
     }
     // 若该行尚未加载,ensureIndexVisible 触发 getRows;加载完后 cellClassRules 重算会高亮。
     gridRef.current?.api?.refreshCells({ force: true });
-  }, [columns]);
+  }, [columns, frozenCount]);
 
   useImperativeHandle(
     ref,
@@ -391,6 +408,13 @@ const TableView = forwardRef<TableViewHandle, TableViewProps>(function TableView
   useEffect(() => {
     if (!blameLoaded) setBlameByLine(new Map());
   }, [blameLoaded]);
+
+  // 切换文件(tableId 变)时清空冻结行与查找高亮:冻结行/偏移与 __rowIndex 都绑定具体文件,
+  // 残留会导致新文件的 datasource 偏移错乱、高亮错位。
+  useEffect(() => {
+    setPinnedTopRows([]);
+    setHits(new Map());
+  }, [tableId]);
 
   // 打开提交详情 Modal:从 blameByLine 取该行 revision
   const openCommitDetail = useCallback(
@@ -406,14 +430,16 @@ const TableView = forwardRef<TableViewHandle, TableViewProps>(function TableView
 
   /** blame gutter 单元格渲染:作者@rev,按作者染色;点击打开 CommitDetailModal。 */
   function blameCellRenderer(params: ICellRendererParams) {
-    const idx = params.node?.rowIndex; // 0-based;blame lineNumber 是 1-based
+    // 用行数据真实有效行号(0-based),+1 得 blame lineNumber(1-based)。
+    // 不能用 node.rowIndex:冻结后数据行 rowIndex 已偏移 frozenCount,pinned 行 rowIndex 语义不稳。
+    const dataIdx = (params.data as { __rowIndex?: number } | undefined)?.__rowIndex ?? 0;
     const byLine = params.context?.blameByLine as
       | Map<number, BlameLineInfo>
       | undefined;
     const openFn = params.context?.openCommitDetail as
       | ((rowIndex: number) => void)
       | undefined;
-    const info = byLine?.get((idx ?? 0) + 1);
+    const info = byLine?.get(dataIdx + 1);
     if (!info) return null as unknown as HTMLElement;
     const color = authorColor(info.author);
     return (
@@ -422,7 +448,7 @@ const TableView = forwardRef<TableViewHandle, TableViewProps>(function TableView
         title={`${info.author} @ r${info.revision} · ${info.date} · 点击查看提交详情`}
         onClick={(e) => {
           e.stopPropagation();
-          openFn?.(idx ?? 0);
+          openFn?.(dataIdx);
         }}
       >
         <span

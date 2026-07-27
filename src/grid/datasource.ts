@@ -2,22 +2,26 @@ import type { IDatasource, IGetRowsParams } from "@ag-grid-community/core";
 import type { TableColumnMeta } from "../store/tableStore";
 
 /**
- * 构造 infinite datasource。
+ * ag-Grid Infinite Row Model 的 datasource 构造器。
  *
- * ag-Grid Infinite Row Model 按滚动视口分块回调 getRows(params):
- * 前端只在每次回调里以 params.startRow/params.endRow 调后端 GET /api/table/data,
- * 拉取当前视口所需的一个分块(默认 100 行),绝不一次性拉全表 / 不在 state 存全表。
- * 后端对缓存 parquet 做 lazy scan + slice,也只物化该分块。
+ * ag-Grid Infinite 模式按需回调 getRows(params):前端只把每次可见区块的
+ * params.startRow/params.endRow 透传给 GET /api/table/data,取回当前区块(默认 100 行)。
+ * 后端基于 Parquet 的 lazy scan + slice 分块读取,只在需要时取行。
  *
- * successCallback(rows, lastRow=rowCount) 告诉 ag-Grid 本块数据 + 总行数,
- * 使滚动条尺寸正确;lastRow 到达后 ag-Grid 不再继续请求后续块。
+ * successCallback(rows, lastRow=rowCount) 告知 ag-Grid 行数据 + 行总数,
+ * 使滚动条尺寸正确;lastRow 让 ag-Grid 知道何时停止加载更多行。
  *
- * 注意:后端 /api/table/data 返回的 rows 是「二维数组」(行 × 列,顺序与 columns 一致),
- * 而 ag-Grid infinite 需要的是「对象数组」(按 columnDef.field 从对象取值)。
- * 这里按 columns 的列名顺序把二维数组转成对象数组,否则单元格取值为 undefined(表头正常但内容空)。
+ * 注:/api/table/data 返回的 rows 是「二维数组」(每行一个数组,顺序与 columns 一致),
+ * 而 ag-Grid infinite 需要「对象数组」(按 columnDef.field 取值)。
+ * 这里按 columns 的顺序把二维行转成对象,缺列元素取值 undefined。
  *
- * headerRow / skipRows 透传:每次请求带上,后端 read_rows 据此剔除跳过行与表头行,
- * 返回的是「剔除后数据行」的对应分块;rowCount 也是剔除后的总数。
+ * headerRow / skipRows 透传:每次请求都带,后端 read_rows 据此剔除跳过行与表头,
+ * 返回的是「剔除后有效行」的对应分块;rowCount 也是剔除后的有效行总数。
+ *
+ * frozenCount(冻结行):冻结 N 行到顶部后,前 N 行由 pinnedTopRowData 提供,
+ * 数据行需跳过它们——请求 startRow/endRow +N 偏移,rowCount -N,否则前 N 行会在
+ * pinned 顶部与数据区重复出现。每行对象附带 __rowIndex(真实有效行号 0-based),
+ * 供 blame/高亮/提交详情统一按真实行号定位,与 ag-Grid rowIndex(冻结后偏移)解耦。
  */
 export function buildDatasource(opts: {
   backendUrl: string;
@@ -28,6 +32,8 @@ export function buildDatasource(opts: {
   sortAsc?: boolean;
   headerRow?: number | null;
   skipRows?: number[][];
+  /** 已冻结到顶部的行数(pinnedTopRowData 行数)。数据行需跳过它们:请求 +frozenCount 偏移,rowCount -frozenCount。 */
+  frozenCount?: number;
 }): IDatasource {
   const {
     backendUrl,
@@ -38,29 +44,33 @@ export function buildDatasource(opts: {
     sortAsc,
     headerRow = null,
     skipRows = [],
+    frozenCount = 0,
   } = opts;
   const base = backendUrl.replace(/\/$/, "");
   const colNames = columns.map((c) => c.name);
 
-  // skipRows [[a,b],...] → "a-b,c-d" 逗号段;[5,5] → "5-5"。空数组 → 不带参数。
+  // skipRows [[a,b],...] 转 "a-b,c-d" 逗号拼接;[5,5] 转 "5-5"(单行也按区间)。
   const skipRowsParam =
     skipRows.length > 0
       ? skipRows.map((seg) => `${seg[0]}-${seg[1]}`).join(",")
       : "";
 
   return {
-    // 已知总行数 -> 设置后 ag-Grid 据此计算滚动条高度,不再盲拉。
-    rowCount,
+    // 冻结 N 行后,ag-Grid 视角数据行总数 = 总有效行数 - N(前 N 行已钉在顶部,不重复加载)。
+    rowCount: Math.max(0, rowCount - frozenCount),
     getRows(params: IGetRowsParams) {
+      // grid 请求 [startRow,endRow) 是 ag-Grid 视角(0-based,已扣除冻结行);
+      // 映射到真实有效行号需 +frozenCount,跳过已冻结到顶部的行,避免与 pinned 重复。
+      const reqStart = params.startRow + frozenCount;
+      const reqEnd = params.endRow + frozenCount;
       let url =
         `${base}/api/table/data` +
         `?tableId=${encodeURIComponent(tableId)}` +
-        `&startRow=${params.startRow}` +
-        `&endRow=${params.endRow}`;
+        `&startRow=${reqStart}` +
+        `&endRow=${reqEnd}`;
       if (sortCol) {
         url += `&sortCol=${encodeURIComponent(sortCol)}&sortAsc=${sortAsc ? 1 : 0}`;
       }
-      // headerRow=null 不带(后端按默认/首行处理);非 null 带。
       if (headerRow !== null) {
         url += `&headerRow=${headerRow}`;
       }
@@ -79,16 +89,19 @@ export function buildDatasource(opts: {
           }>;
         })
         .then((data) => {
-          // 后端 rows 为二维数组,顺序与 columns 一致;空值已是 null。
-          // 转 ag-Grid 所需的对象数组:{ [colName]: value }。
-          const objectRows = data.rows.map((arr) => {
+          // 返回 rows 为二维数组,顺序与 columns 一致;缺列值可能为 null。
+          // 转 ag-Grid 需要的对象数组:{ [colName]: value },并附 __rowIndex。
+          const objectRows = data.rows.map((arr, rowI) => {
             const obj: Record<string, unknown> = {};
-            colNames.forEach((name, i) => {
-              obj[name] = arr[i];
+            colNames.forEach((name, colJ) => {
+              obj[name] = arr[colJ];
             });
+            // 真实有效行号(0-based)。reqStart 已含冻结偏移,故 = 该行在原数据集中的真实行号。
+            obj.__rowIndex = reqStart + rowI;
             return obj;
           });
-          params.successCallback(objectRows, data.rowCount);
+          // lastRow 同样扣除冻结行数,否则 ag-Grid 会继续尝试加载已冻结的行段。
+          params.successCallback(objectRows, Math.max(0, data.rowCount - frozenCount));
         })
         .catch(() => {
           params.failCallback();
