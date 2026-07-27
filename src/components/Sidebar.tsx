@@ -1,6 +1,7 @@
 import { Tooltip } from "antd";
-import { TableOutlined, CheckCircleOutlined, SettingOutlined } from "@ant-design/icons";
+import { TableOutlined, CheckCircleOutlined, SunOutlined, MoonOutlined } from "@ant-design/icons";
 import { useNavStore } from "../store/navStore";
+import { useThemeStore } from "../store/themeStore";
 
 /**
  * 左侧 56px 图标导航栏。
@@ -12,6 +13,8 @@ import { useNavStore } from "../store/navStore";
 export default function Sidebar() {
   const active = useNavStore((s) => s.active);
   const setActive = useNavStore((s) => s.setActive);
+  const theme = useThemeStore((s) => s.theme);
+  const toggleTheme = useThemeStore((s) => s.toggle);
 
   return (
     <div
@@ -64,22 +67,32 @@ export default function Sidebar() {
         icon={<CheckCircleOutlined />}
       />
 
-      {/* 底部 spacer + 设置 */}
+      {/* 底部 spacer + 主题切换 */}
       <div style={{ flex: 1 }} />
-      <Tooltip title="设置" placement="right">
+      <Tooltip title={theme === "dark" ? "切换浅色主题" : "切换深色主题"} placement="right">
         <div
+          onClick={toggleTheme}
           style={{
             width: 36,
             height: 36,
             display: "flex",
             alignItems: "center",
             justifyContent: "center",
-            color: "var(--text-dim)",
-            cursor: "not-allowed",
-            opacity: 0.5,
+            color: "var(--text-muted)",
+            cursor: "pointer",
+            borderRadius: 4,
+            transition: "color .15s, background .15s",
+          }}
+          onMouseEnter={(e) => {
+            e.currentTarget.style.color = "var(--accent)";
+            e.currentTarget.style.background = "var(--accent-soft)";
+          }}
+          onMouseLeave={(e) => {
+            e.currentTarget.style.color = "var(--text-muted)";
+            e.currentTarget.style.background = "transparent";
           }}
         >
-          <SettingOutlined />
+          {theme === "dark" ? <SunOutlined /> : <MoonOutlined />}
         </div>
       </Tooltip>
     </div>

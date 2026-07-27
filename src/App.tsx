@@ -5,6 +5,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import { ConfigProvider, theme as antdTheme, App as AntApp } from "antd";
 import { useTableStore, type TableColumnMeta } from "./store/tableStore";
+import { useThemeStore } from "./store/themeStore";
 import Sidebar from "./components/Sidebar";
 import Toolbar from "./components/Toolbar";
 import EmptyState from "./components/EmptyState";
@@ -209,14 +210,20 @@ export default function App() {
 
   const ready = backendUrl !== null && tableId !== null && rowCount !== null;
 
+  // 主题:驱动 antd ConfigProvider 的 algorithm + token(CSS 变量由 themeStore 模块副作用应用到 <html>)。
+  const theme = useThemeStore((s) => s.theme);
+  // antd token 不吃 CSS 变量字符串,需在 JS 维护两套与 theme.css 对齐。字体/圆角跨主题不变。
+  const antdToken =
+    theme === "light"
+      ? { colorPrimary: "#c8e663", colorBgBase: "#ffffff", colorTextBase: "#1a1f23" }
+      : { colorPrimary: "#c8e663", colorBgBase: "#0e1113", colorTextBase: "#e7eaec" };
+
   return (
     <ConfigProvider
       theme={{
-        algorithm: antdTheme.darkAlgorithm,
+        algorithm: theme === "light" ? antdTheme.defaultAlgorithm : antdTheme.darkAlgorithm,
         token: {
-          colorPrimary: "#c8e663",
-          colorBgBase: "#0e1113",
-          colorTextBase: "#e7eaec",
+          ...antdToken,
           fontFamily:
             '"IBM Plex Sans","PingFang SC","Microsoft YaHei",sans-serif',
           borderRadius: 6,

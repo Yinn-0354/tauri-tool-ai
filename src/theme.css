@@ -5,7 +5,8 @@
  * 所有颜色以 CSS 变量定义在 :root,组件用 var(--xxx) 引用,便于未来主题切换。
  */
 
-:root {
+:root,
+[data-theme="dark"] {
   /* 背景层:基底 / 面板 / 抬升 */
   --bg: #0e1113;
   --bg-panel: #15191c;
@@ -34,23 +35,25 @@
   --font-mono: "IBM Plex Mono", ui-monospace, monospace;
 }
 
-[data-theme="dark"] {
-  /* 显式 dark 主题别名,与 :root 等价,供 AntD ConfigProvider 使用。 */
-  --bg: #0e1113;
-  --bg-panel: #15191c;
-  --bg-elevated: #1c2125;
-  --border: #262d31;
-  --border-strong: #313a40;
-  --text: #e7eaec;
-  --text-muted: #9aa3aa;
-  --text-dim: #6b747b;
+/* 浅色主题:覆盖颜色变量(字体跨主题一致,不覆盖)。电石绿 accent 保留,亮底透明度略提以可见。 */
+[data-theme="light"] {
+  --bg: #ffffff;
+  --bg-panel: #f7f8f9;
+  --bg-elevated: #eef0f2;
+
+  --border: #e4e7e9;
+  --border-strong: #d0d4d8;
+
+  --text: #1a1f23;
+  --text-muted: #5a636b;
+  --text-dim: #8a939a;
+
   --accent: #c8e663;
-  --accent-soft: rgba(200, 230, 99, 0.12);
-  --accent-dim: #3a4423;
-  --danger: #ff6b6b;
-  --warn: #e8a33d;
-  --font-sans: "IBM Plex Sans", "PingFang SC", "Microsoft YaHei", sans-serif;
-  --font-mono: "IBM Plex Mono", ui-monospace, monospace;
+  --accent-soft: rgba(200, 230, 99, 0.18);
+  --accent-dim: #a8c450;
+
+  --danger: #d64545;
+  --warn: #c77d1f;
 }
 
 html,
