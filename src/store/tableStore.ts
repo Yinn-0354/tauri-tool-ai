@@ -38,6 +38,11 @@ export interface TableState {
   /** blame 请求进行中(按钮 loading 态)。 */
   blameLoading: boolean;
 
+  /** 列筛选总开关:开启后每列表头显示漏斗图标(默认开)。 */
+  filterEnabled: boolean;
+  /** 列筛选状态:列名 → 选中值列表(空数组/缺省=该列未筛选)。多列 AND 组合。 */
+  filters: Record<string, string[]>;
+
   setBackendUrl: (url: string) => void;
   setTable: (info: {
     tableId: string;
@@ -58,6 +63,14 @@ export interface TableState {
     error?: string | null;
   }) => void;
   setBlameLoading: (b: boolean) => void;
+  /** 切换筛选总开关。关闭时自动清空所有筛选(让表格恢复全量)。 */
+  setFilterEnabled: (b: boolean) => void;
+  /** 设置某列筛选值(空数组=清除该列筛选)。 */
+  setFilter: (col: string, values: string[]) => void;
+  /** 清除某列筛选。 */
+  clearFilter: (col: string) => void;
+  /** 清除所有列筛选。 */
+  clearAllFilters: () => void;
   reset: () => void;
 }
 
@@ -78,6 +91,9 @@ export const useTableStore = create<TableState>((set) => ({
   blameError: null,
   blameLoading: false,
 
+  filterEnabled: true,
+  filters: {},
+
   setBackendUrl: (url) => set({ backendUrl: url }),
   setTable: (info) =>
     set({
@@ -93,6 +109,8 @@ export const useTableStore = create<TableState>((set) => ({
       blameCount: 0,
       blameError: null,
       blameLoading: false,
+      // 切换文件时清空筛选(筛选绑定具体文件,残留会错位)
+      filters: {},
     }),
   setHeaderSkip: (info) =>
     set({ headerRow: info.headerRow, skipRows: info.skipRows }),
@@ -106,6 +124,26 @@ export const useTableStore = create<TableState>((set) => ({
       blameError: info.error ?? null,
     }),
   setBlameLoading: (b) => set({ blameLoading: b }),
+  setFilterEnabled: (b) =>
+    set(b ? { filterEnabled: true } : { filterEnabled: false, filters: {} }),
+  setFilter: (col, values) =>
+    set((s) => {
+      const next = { ...s.filters };
+      if (!values || values.length === 0) {
+        delete next[col];
+      } else {
+        next[col] = values;
+      }
+      return { filters: next };
+    }),
+  clearFilter: (col) =>
+    set((s) => {
+      if (!(col in s.filters)) return s;
+      const next = { ...s.filters };
+      delete next[col];
+      return { filters: next };
+    }),
+  clearAllFilters: () => set({ filters: {} }),
   reset: () =>
     set({
       tableId: null,
@@ -121,5 +159,6 @@ export const useTableStore = create<TableState>((set) => ({
       blameCount: 0,
       blameError: null,
       blameLoading: false,
+      filters: {},
     }),
 }));

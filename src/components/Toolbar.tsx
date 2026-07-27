@@ -6,6 +6,7 @@ import {
   DownloadOutlined,
   BranchesOutlined,
   SearchOutlined,
+  FilterOutlined,
 } from "@ant-design/icons";
 import { useTableStore } from "../store/tableStore";
 
@@ -57,8 +58,14 @@ export default function Toolbar({
   const blameLoaded = useTableStore((s) => s.blameLoaded);
   const blameCount = useTableStore((s) => s.blameCount);
   const blameError = useTableStore((s) => s.blameError);
+  const filterEnabled = useTableStore((s) => s.filterEnabled);
+  const filters = useTableStore((s) => s.filters);
+  const setFilterEnabled = useTableStore((s) => s.setFilterEnabled);
+  const clearAllFilters = useTableStore((s) => s.clearAllFilters);
 
   const hasTable = tableId !== null;
+  // 已筛选的列数(用于开关按钮角标)
+  const activeFilterCount = Object.values(filters).filter((v) => v && v.length > 0).length;
 
   // blame 按钮文案:加载中 → "获取中";完成 → "Blame ✓ N";未加载 → "获取 Blame"
   const blameLabel = blameLoaded
@@ -333,6 +340,50 @@ export default function Toolbar({
         >
           {rowCount.toLocaleString()} 行 · {columns.length} 列
         </span>
+      )}
+
+      {/* 列筛选总开关(仅 hasTable):开关默认开,开启时表头显示漏斗;关闭则收起漏斗并清空筛选。 */}
+      {hasTable && (
+        <>
+          <Tooltip title={filterEnabled ? "筛选已开启:点表头漏斗按列筛选。点击关闭收起漏斗" : "筛选已关闭:表头无漏斗。点击开启"}>
+            <Button
+              size="small"
+              icon={<FilterOutlined />}
+              onClick={() => setFilterEnabled(!filterEnabled)}
+              style={{
+                color: filterEnabled ? "var(--accent)" : "var(--text)",
+                borderColor: filterEnabled ? "var(--accent-dim)" : "var(--border-strong)",
+                background: filterEnabled ? "var(--accent-soft)" : "transparent",
+                fontFamily: "var(--font-mono)",
+                fontSize: 12,
+              }}
+            >
+              筛选
+              {activeFilterCount > 0 && (
+                <span style={{ marginLeft: 4, fontSize: 10, fontWeight: 600 }}>
+                  {activeFilterCount}
+                </span>
+              )}
+            </Button>
+          </Tooltip>
+          {activeFilterCount > 0 && (
+            <Tooltip title="清除所有列筛选">
+              <Button
+                size="small"
+                onClick={clearAllFilters}
+                style={{
+                  color: "var(--text-muted)",
+                  borderColor: "var(--border-strong)",
+                  background: "transparent",
+                  fontFamily: "var(--font-mono)",
+                  fontSize: 12,
+                }}
+              >
+                清筛选
+              </Button>
+            </Tooltip>
+          )}
+        </>
       )}
 
       {/* 查找(ghost,仅 tableId 存在):Dropdown 包裹按钮,trigger=click */}

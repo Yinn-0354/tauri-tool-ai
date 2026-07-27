@@ -16,6 +16,7 @@ import type {
 } from "@ag-grid-community/core";
 import { buildDatasource } from "./datasource";
 import { fetchBlame, authorColor, type BlameLineInfo } from "./blame";
+import ColumnFilterHeader from "./ColumnFilterHeader";
 import type { TableColumnMeta } from "../store/tableStore";
 import { useTableStore } from "../store/tableStore";
 import CommitDetailModal from "../components/CommitDetailModal";
@@ -102,6 +103,11 @@ const TableView = forwardRef<TableViewHandle, TableViewProps>(function TableView
   // store:blame 状态(由 Toolbar 触发,此处执行 + 写回)
   const setBlame = useTableStore((s) => s.setBlame);
   const setBlameLoading = useTableStore((s) => s.setBlameLoading);
+  // store:列筛选状态(工具栏开关 + 表头漏斗读写)
+  const filterEnabled = useTableStore((s) => s.filterEnabled);
+  const filters = useTableStore((s) => s.filters);
+  const setFilter = useTableStore((s) => s.setFilter);
+  const clearFilter = useTableStore((s) => s.clearFilter);
 
   // 命中单元格 class 规则:行命中且该列命中 → 加 tt-hit。blame gutter 列(__blame)永远不高亮。
   const cellClassRules = useMemo(
@@ -127,15 +133,40 @@ const TableView = forwardRef<TableViewHandle, TableViewProps>(function TableView
   );
 
   const columnDefs = useMemo<ColDef[]>(() => {
-    const dataCols: ColDef[] = columns.map((c) => ({
-      field: c.name,
-      headerName: c.name,
-      minWidth: 120,
-      resizable: true,
-      sortable: true, // 开启排序 UI;实际排序由 onSortChanged 拦截走后端(社区版 infinite 不自动透传)
-      cellClassRules,
-      cellClass: "tt-data-cell", // 数据列标记类:冻结列样式只命中此类的单元格,排除 blame gutter
-    }));
+    const dataCols: ColDef[] = columns.map((c) => {
+      const def: ColDef = {
+        field: c.name,
+        headerName: c.name,
+        minWidth: 120,
+        resizable: true,
+        sortable: true, // 开启排序 UI;实际排序由 onSortChanged 拦截走后端(社区版 infinite 不自动透传)
+        cellClassRules,
+        cellClass: "tt-data-cell", // 数据列标记类:冻结列样式只命中此类的单元格,排除 blame gutter
+      };
+      if (filterEnabled) {
+        // 自绘表头:列名 + 漏斗图标(点击弹该列筛选下拉)。社区版无 Set Filter,自行实现。
+        def.headerComponent = ColumnFilterHeader;
+        def.headerComponentParams = {
+          colName: c.name,
+          selected: filters[c.name] ?? [],
+          backendUrl,
+          tableId,
+          headerRow,
+          skipRows,
+          // 其他列的筛选(开本列下拉时,传给 /api/table/column-values 做按其他列已筛选项去重)
+          otherFilters: (() => {
+            const o: Record<string, string[]> = {};
+            for (const [k, v] of Object.entries(filters)) {
+              if (k !== c.name && v && v.length > 0) o[k] = v;
+            }
+            return o;
+          })(),
+          onApply: (values: string[]) => setFilter(c.name, values),
+          onClear: () => clearFilter(c.name),
+        };
+      }
+      return def;
+    });
     if (blameLoaded) {
       const blameCol: ColDef = {
         headerName: "Blame",
@@ -151,7 +182,7 @@ const TableView = forwardRef<TableViewHandle, TableViewProps>(function TableView
       return [blameCol, ...dataCols];
     }
     return dataCols;
-  }, [columns, blameLoaded, cellClassRules]);
+  }, [columns, blameLoaded, cellClassRules, filterEnabled, filters, backendUrl, tableId, headerRow, skipRows, setFilter, clearFilter]);
 
   // 冻结行:用 pinnedTopRowData prop(社区版支持),受控 state。
   // 语义:冻结至此行 = 该行及以上所有行钉在顶部(与「冻结至此列」对称)。
@@ -174,8 +205,9 @@ const TableView = forwardRef<TableViewHandle, TableViewProps>(function TableView
         headerRow,
         skipRows,
         frozenCount,
+        filters,
       }),
-    [backendUrl, tableId, rowCount, columns, sortCol, sortAsc, headerRow, skipRows, frozenCount]
+    [backendUrl, tableId, rowCount, columns, sortCol, sortAsc, headerRow, skipRows, frozenCount, filters]
   );
 
   // ag-Grid 列头排序变化:infinite 模式下需手动把排序状态转成 sortCol/sortAsc 并重设 datasource。
@@ -252,17 +284,26 @@ const TableView = forwardRef<TableViewHandle, TableViewProps>(function TableView
     if (rowIndex >= FREEZE_ROW_MAX) return false; // 行数过多,调用方提示
     // 拉该行及以上所有行(真实有效行 0..rowIndex),作为 pinnedTopRowData 钉在顶部。
     // 必须带上当前 sortCol/sortAsc,使 pinned 行与数据行同序(排序后冻结也一致)。
+    // 不带 filters:按用户决策,应用任何列筛选会自动清空冻结行,故冻结拉数据时 filters 必为空。
     const rows: Record<string, unknown>[] = [];
     const base = backendUrl.replace(/\/$/, "");
-    const skipParam = skipRows.length > 0
-      ? skipRows.map((s) => `${s[0]}-${s[1]}`).join(",")
-      : "";
-    let url = `${base}/api/table/data?tableId=${encodeURIComponent(tableId)}&startRow=0&endRow=${rowIndex + 1}`;
-    if (sortCol) url += `&sortCol=${encodeURIComponent(sortCol)}&sortAsc=${sortAsc ? 1 : 0}`;
-    if (headerRow !== null) url += `&headerRow=${headerRow}`;
-    if (skipParam) url += `&skipRows=${encodeURIComponent(skipParam)}`;
+    const body: Record<string, unknown> = {
+      tableId,
+      startRow: 0,
+      endRow: rowIndex + 1,
+      skipRows,
+    };
+    if (sortCol) {
+      body.sortCol = sortCol;
+      body.sortAsc = sortAsc;
+    }
+    if (headerRow !== null) body.headerRow = headerRow;
     try {
-      const resp = await fetch(url);
+      const resp = await fetch(`${base}/api/table/data`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      });
       const d = (await resp.json()) as { rows: unknown[][] };
       d.rows.forEach((arr, i) => {
         const obj: Record<string, unknown> = {};
@@ -415,6 +456,15 @@ const TableView = forwardRef<TableViewHandle, TableViewProps>(function TableView
     setPinnedTopRows([]);
     setHits(new Map());
   }, [tableId]);
+
+  // 列筛选变化时清空冻结行与查找高亮(按用户决策:应用任何列筛选自动清空冻结行)。
+  // 冻结行基于筛选前行号,筛选后行集合变了,保留冻结行会与筛选结果语义冲突;
+  // 查找高亮按 __rowIndex 定位,筛选后行号空间变,旧 hits 失效,一并清空。
+  // filters 是 store 对象,引用变化即触发(每列 set/clear 都生成新对象)。
+  useEffect(() => {
+    setPinnedTopRows([]);
+    setHits(new Map());
+  }, [filters]);
 
   // 打开提交详情 Modal:从 blameByLine 取该行 revision
   const openCommitDetail = useCallback(

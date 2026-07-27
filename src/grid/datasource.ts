@@ -34,6 +34,8 @@ export function buildDatasource(opts: {
   skipRows?: number[][];
   /** 已冻结到顶部的行数(pinnedTopRowData 行数)。数据行需跳过它们:请求 +frozenCount 偏移,rowCount -frozenCount。 */
   frozenCount?: number;
+  /** 列筛选:列名 → 选中值列表(多列 AND)。传给后端 /api/table/data(POST body)。 */
+  filters?: Record<string, string[]>;
 }): IDatasource {
   const {
     backendUrl,
@@ -45,15 +47,16 @@ export function buildDatasource(opts: {
     headerRow = null,
     skipRows = [],
     frozenCount = 0,
+    filters = {},
   } = opts;
   const base = backendUrl.replace(/\/$/, "");
   const colNames = columns.map((c) => c.name);
 
-  // skipRows [[a,b],...] 转 "a-b,c-d" 逗号拼接;[5,5] 转 "5-5"(单行也按区间)。
-  const skipRowsParam =
-    skipRows.length > 0
-      ? skipRows.map((seg) => `${seg[0]}-${seg[1]}`).join(",")
-      : "";
+  // 只把非空筛选传后端(空数组=未筛)。
+  const activeFilters: Record<string, string[]> = {};
+  for (const [k, v] of Object.entries(filters)) {
+    if (v && v.length > 0) activeFilters[k] = v;
+  }
 
   return {
     // 冻结 N 行后,ag-Grid 视角数据行总数 = 总有效行数 - N(前 N 行已钉在顶部,不重复加载)。
@@ -63,22 +66,28 @@ export function buildDatasource(opts: {
       // 映射到真实有效行号需 +frozenCount,跳过已冻结到顶部的行,避免与 pinned 重复。
       const reqStart = params.startRow + frozenCount;
       const reqEnd = params.endRow + frozenCount;
-      let url =
-        `${base}/api/table/data` +
-        `?tableId=${encodeURIComponent(tableId)}` +
-        `&startRow=${reqStart}` +
-        `&endRow=${reqEnd}`;
+      const body: Record<string, unknown> = {
+        tableId,
+        startRow: reqStart,
+        endRow: reqEnd,
+        skipRows,
+      };
       if (sortCol) {
-        url += `&sortCol=${encodeURIComponent(sortCol)}&sortAsc=${sortAsc ? 1 : 0}`;
+        body.sortCol = sortCol;
+        body.sortAsc = sortAsc;
       }
       if (headerRow !== null) {
-        url += `&headerRow=${headerRow}`;
+        body.headerRow = headerRow;
       }
-      if (skipRowsParam) {
-        url += `&skipRows=${encodeURIComponent(skipRowsParam)}`;
+      if (Object.keys(activeFilters).length > 0) {
+        body.filters = activeFilters;
       }
 
-      fetch(url)
+      fetch(`${base}/api/table/data`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      })
         .then((res) => {
           if (!res.ok) throw new Error(`HTTP ${res.status}`);
           return res.json() as Promise<{
