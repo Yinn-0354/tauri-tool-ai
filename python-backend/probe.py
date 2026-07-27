@@ -149,14 +149,14 @@ def endpoint_smoke(tab_path: Path) -> dict[str, str]:
     out["open_col_count"] = str(len(body.get("columns", [])))
 
     tid = body["tableId"]
-    r2 = c.get("/api/table/data", params={"tableId": tid, "startRow": 0, "endRow": 5})
+    r2 = c.post("/api/table/data", json={"tableId": tid, "startRow": 0, "endRow": 5})
     out["data_status"] = str(r2.status_code)
     b2 = r2.json()
     out["data_rowCount"] = str(b2.get("rowCount", ""))
     out["data_rows_len"] = str(len(b2.get("rows", [])))
 
     # 带排序的 data
-    r3 = c.get("/api/table/data", params={"tableId": tid, "startRow": 0, "endRow": 3, "sortCol": "id", "sortAsc": "true"})
+    r3 = c.post("/api/table/data", json={"tableId": tid, "startRow": 0, "endRow": 3, "sortCol": "id", "sortAsc": True})
     out["data_sorted_status"] = str(r3.status_code)
     b3 = r3.json()
     out["data_sorted_rows_len"] = str(len(b3.get("rows", [])))

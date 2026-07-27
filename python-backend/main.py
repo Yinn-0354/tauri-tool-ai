@@ -84,44 +84,51 @@ def table_open(req: TableOpenRequest):
     }
 
 
-@app.get("/api/table/data")
-def table_data(
-    tableId: str = Query(..., description="open 返回的 tableId"),
-    startRow: int = Query(0, ge=0),
-    endRow: int = Query(..., ge=0),
-    sortCol: str | None = Query(None, description="可选排序列名"),
-    sortAsc: bool = Query(True, description="sortCol 升序(True)/降序(False)"),
-    headerRow: int | None = Query(None, description="表头行(1-based);null=首行当表头"),
-    skipRows: str | None = Query(None, description='跳过段,逗号分隔如 "1-3,7-9";空=无'),
-):
-    """对缓存 Parquet 做 lazy scan,可选 sort,slice 后取二维行数组,应用 headerRow/skipRows 剔除。"""
-    if endRow <= startRow:
+class TableDataRequest(BaseModel):
+    tableId: str
+    startRow: int = 0
+    endRow: int
+    sortCol: str | None = None
+    sortAsc: bool = True
+    headerRow: int | None = None
+    skipRows: list[list[int]] = []  # [[a,b],...] 1-based 闭区间段
+    filters: dict[str, list[str]] | None = None  # {配置列名: [值,...]},多列 AND
+
+
+@app.post("/api/table/data")
+def table_data(req: TableDataRequest):
+    """对缓存 Parquet 做 lazy scan,可选 sort,slice 后取二维行数组。
+
+    应用 headerRow/skipRows 剔除 + 列筛选(filters,多列 AND);返回筛选后 rowCount。
+    改 POST:filters 值列表可能很长,GET URL 会超限。
+    """
+    if req.endRow <= req.startRow:
         raise HTTPException(status_code=400, detail="endRow 必须大于 startRow")
-    skip_list = _parse_skip_rows_query(skipRows)
     try:
         rows, row_count = table_io.read_rows(
-            table_id=tableId,
-            start_row=startRow,
-            end_row=endRow,
-            sort_col=sortCol,
-            sort_asc=sortAsc,
-            headerRow=headerRow,
-            skipRows=skip_list,
+            table_id=req.tableId,
+            start_row=req.startRow,
+            end_row=req.endRow,
+            sort_col=req.sortCol,
+            sort_asc=req.sortAsc,
+            headerRow=req.headerRow,
+            skipRows=req.skipRows,
+            filters=req.filters,
         )
     except FileNotFoundError as e:
         raise HTTPException(status_code=404, detail=str(e))
     except Exception as e:  # noqa: BLE001
         raise HTTPException(status_code=400, detail=f"读取失败: {e}")
     return {
-        "startRow": startRow,
-        "endRow": endRow,
+        "startRow": req.startRow,
+        "endRow": req.endRow,
         "rowCount": row_count,
         "rows": rows,
     }
 
 
 def _parse_skip_rows_query(s: str | None) -> list[list[int]]:
-    """解析 "1-3,7-9" 为 [[1,3],[7,9]];空/非法返回 []。"""
+    """已废弃:/api/table/data 改 POST 后无调用方。保留以备 search 等端点需要 query 形式 skipRows。"""
     if not s:
         return []
     out: list[list[int]] = []
@@ -145,6 +152,37 @@ def _parse_skip_rows_query(s: str | None) -> list[list[int]]:
                 continue
             out.append([a, a])
     return out
+
+
+class ColumnValuesRequest(BaseModel):
+    tableId: str
+    column: str
+    headerRow: int | None = None
+    skipRows: list[list[int]] = []
+    filters: dict[str, list[str]] | None = None  # 调用方应排除本列,使计数=按其他列筛选后的值计数
+
+
+@app.post("/api/table/column-values")
+def table_column_values(req: ColumnValuesRequest):
+    """取某列去重值 + 每个值的重复数目(按数目降序)。
+
+    范围:应用 headerRow/skipRows + filters(其他列)筛选后的可见行集合。filters 应排除本列,
+    使本列已选值也能看到它的总数。列值统一按字符串处理。
+    返回 {values: [{value, count}], truncated}。truncated=True 表示超过上限被截断。
+    """
+    try:
+        values, truncated = table_io.column_unique(
+            table_id=req.tableId,
+            column=req.column,
+            headerRow=req.headerRow,
+            skipRows=req.skipRows,
+            filters=req.filters,
+        )
+    except FileNotFoundError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except Exception as e:  # noqa: BLE001
+        raise HTTPException(status_code=400, detail=f"取列值失败: {e}")
+    return {"values": values, "truncated": truncated}
 
 
 # ───────────────────────── 模块1 表头/跳过配置 ─────────────────────────

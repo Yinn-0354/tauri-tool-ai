@@ -358,15 +358,21 @@ def _sort_index_path(
     sort_col: str,
     sort_asc: bool,
     config_hash: str = "",
+    filter_hash: str = "",
 ) -> Path:
-    """排序索引缓存路径:<tableId>.sortidx_<col>_<asc|desc>[_<configHash>].json。
+    """排序索引缓存路径:<tableId>.sortidx_<col>_<asc|desc>[_<configHash>][_f<filterHash>].json。
 
     configHash: headerRow/skipRows 的 hash,因有效行集合变了排序结果不同。
+    filterHash: 列筛选的 hash,筛选后有效行集合不同,排序结果也不同,必须入 key 防缓存污染。
     """
     direction = "asc" if sort_asc else "desc"
     # 列名可能含特殊字符,用 hash 规避文件名问题
     col_hash = hashlib.sha1(sort_col.encode("utf-8")).hexdigest()[:16]
-    suffix = f"_{config_hash}" if config_hash else ""
+    suffix = ""
+    if config_hash:
+        suffix += f"_{config_hash}"
+    if filter_hash:
+        suffix += f"_f{filter_hash}"
     return CACHE_DIR / f"{table_id}.sortidx_{col_hash}_{direction}{suffix}.json"
 
 
@@ -374,6 +380,68 @@ def _config_hash(header_row: int | None, skip_rows: list[tuple[int, int]]) -> st
     """headerRow/skipRows 的短 hash,用于排序索引缓存 key。"""
     key = f"{header_row}|{sorted(skip_rows)}"
     return hashlib.sha1(key.encode("utf-8")).hexdigest()[:8]
+
+
+def _filter_hash(filters: dict[str, list[str]] | None) -> str:
+    """列筛选的短 hash,用于排序索引缓存 key。
+
+    按 col 名排序后序列化「col: 排序后的值列表」,保证不同顺序的同值筛选 hash 一致。
+    """
+    if not filters:
+        return ""
+    items = sorted((c, sorted(vs or [])) for c, vs in filters.items())
+    key = json.dumps(items, ensure_ascii=False, sort_keys=True)
+    return hashlib.sha1(key.encode("utf-8")).hexdigest()[:8]
+
+
+def _normalize_filters(
+    parquet_path: Path,
+    filters: dict[str, list[str]] | None,
+    header_row: int | None,
+) -> dict[str, list[str]]:
+    """把「配置列名 → 值列表」筛选规范化为「parquet schema 列名 → 值列表」。
+
+    - 映射列名:配置列名 → schema 列名(column_N),映射失败的列丢弃。
+    - 去掉空值列表与空筛选的列。
+    返回规范化后的 dict(可能为空)。
+    """
+    if not filters:
+        return {}
+    out: dict[str, list[str]] = {}
+    for col, values in filters.items():
+        if not isinstance(values, list) or not values:
+            continue
+        schema_col = _config_col_to_schema_col(parquet_path, col, header_row)
+        if schema_col is None:
+            continue
+        # 去空、保序去重
+        clean = [str(v) for v in values if v is not None and v != ""]
+        if clean:
+            out[schema_col] = clean
+    return out
+
+
+def _apply_filters_effective(
+    parquet_path: Path,
+    effective: list[int],
+    filters_schema: dict[str, list[str]],
+) -> list[int]:
+    """对有效行集合应用列筛选(多列 AND),返回筛选后的有效原始行号(0-based)子集。
+
+    用 lazy scan + with_row_index + is_in(effective) + 各列 cast(Utf8).is_in(values) 的 AND 链,
+    一次 collect 取满足全部筛选的行号,保持原升序。无筛选时原样返回。
+    """
+    if not filters_schema or not effective:
+        return list(effective)
+    lazy = pl.scan_parquet(parquet_path)
+    effective_set = list(effective)
+    expr = pl.col("row_index").is_in(effective_set)
+    for schema_col, values in filters_schema.items():
+        # 统一字符串比较:列值 cast 字符串,值已是字符串
+        expr = expr & pl.col(schema_col).cast(pl.String, strict=False).fill_null("").is_in(values)
+    with_idx = lazy.with_row_index("row_index")
+    df = with_idx.filter(expr).select("row_index").collect()
+    return df["row_index"].to_list()
 
 
 def _effective_rows(
@@ -409,14 +477,16 @@ def _get_sort_index(
     sort_asc: bool,
     effective_rows: list[int],
     config_hash: str = "",
+    filter_hash: str = "",
 ) -> list[int] | None:
     """取排序索引(有效行内的排序后位置 → 有效原始行号 0-based)。
 
-    命中缓存则直接返回,否则对「有效行集合」按 sort_col 排序存序。
+    effective_rows 已是「应用 headerRow/skipRows + 列筛选后」的有效行集合。
+    命中缓存(路径含 config_hash + filter_hash)则直接返回,否则对该集合按 sort_col 排序存序。
     返回 None 表示该列不存在或无法排序。
     """
     table_id = parquet_path.stem
-    idx_path = _sort_index_path(table_id, sort_col, sort_asc, config_hash)
+    idx_path = _sort_index_path(table_id, sort_col, sort_asc, config_hash, filter_hash)
     if idx_path.exists():
         try:
             with open(idx_path, "r", encoding="utf-8") as f:
@@ -448,17 +518,20 @@ def read_rows(
     sort_asc: bool = True,
     headerRow: int | None = None,
     skipRows: list[list[int]] | None = None,
+    filters: dict[str, list[str]] | None = None,
 ) -> tuple[list[list[Any]], int]:
-    """对缓存 Parquet 取二维行数组,可选按列排序,并应用 headerRow/skipRows 剔除。
+    """对缓存 Parquet 取二维行数组,可选按列排序,并应用 headerRow/skipRows 剔除与列筛选。
 
-    有效数据行 = 原始行去掉 headerRow 行 + skipRows 段(1-based 闭区间,与 headerRow 重叠只算一次)。
-    headerRow=null 时首行(行号1)当表头,从数据中剔除。
-    startRow/endRow 是「有效行序号」(0-based,剔除后)的区间 [startRow, endRow)。
+    有效数据行 = 原始行去掉 headerRow 行 + skipRows 段(1-based 闭区间,与 headerRow 重叠只算一次),
+    再应用列筛选(多列 AND,值=该列选中值集合的成员)。headerRow=null 时首行(行号1)当表头剔除。
+    startRow/endRow 是「筛选+剔除后有效行序号」(0-based)的区间 [startRow, endRow)。
 
-    排序策略:用列级排序索引缓存(key 含 headerRow/skipRows hash),首次排序时对有效行集合
-    按列排序存「排序后位置 → 有效原始行号(0-based)」并落盘,后续直接按索引取行。
+    排序策略:用列级排序索引缓存(key 含 headerRow/skipRows hash + 列筛选 hash),
+    首次排序时对「筛选后有效行集合」按列排序存「排序后位置 → 有效原始行号(0-based)」并落盘,
+    后续直接按索引取行。筛选 hash 必须入 key,否则筛选后命中未筛选的旧索引→行序错乱。
 
-    返回 (rows, rowCount):rows 为二维数组,顺序与 columns 一致,空值 None;rowCount 为剔除后行数。
+    filters: {配置列名: [值,...]},值统一按字符串比较(列值 cast Utf8)。
+    返回 (rows, rowCount):rows 为二维数组,顺序与 columns 一致,空值 None;rowCount 为筛选+剔除后行数。
     """
     parquet_path, _ = _cache_paths(table_id)
     if not parquet_path.exists():
@@ -467,10 +540,16 @@ def read_rows(
     skip_norm = _normalize_skip_rows(skipRows)
     effective_header = headerRow if (headerRow is not None and headerRow > 0) else None
     config_h = _config_hash(effective_header, skip_norm)
+    # 列筛选规范化为 schema 列名 → 值列表;空筛选 → 无筛选
+    filters_schema = _normalize_filters(parquet_path, filters, effective_header)
+    filter_h = _filter_hash(filters_schema)
 
     lazy = pl.scan_parquet(parquet_path)
     raw_row_count = lazy.select(pl.len()).collect().item()
     effective = _effective_rows(raw_row_count, effective_header, skip_norm)
+    # 应用列筛选,缩小有效行集合(多列 AND)
+    if filters_schema:
+        effective = _apply_filters_effective(parquet_path, effective, filters_schema)
     row_count = len(effective)
 
     length = max(0, end_row - start_row)
@@ -483,7 +562,9 @@ def read_rows(
         # 把配置后的列名映射回 parquet schema 列名(polars has_header=False 时 schema 列名为 column_N)
         schema_sort_col = _config_col_to_schema_col(parquet_path, sort_col, effective_header)
         if schema_sort_col is not None:
-            sort_order = _get_sort_index(parquet_path, schema_sort_col, sort_asc, effective, config_h)
+            sort_order = _get_sort_index(
+                parquet_path, schema_sort_col, sort_asc, effective, config_h, filter_h
+            )
         else:
             sort_order = None
         if sort_order is not None:
@@ -511,6 +592,69 @@ def read_rows(
     rows_raw = df.drop("row_index").rows()
     ordered_rows = [rows_raw[row_to_pos[orig]] for orig in wanted_orig]
     return [[_to_jsonable(v) for v in row] for row in ordered_rows], row_count
+
+
+# ───────────────────────── column_unique(列去重+计数) ─────────────────────────
+
+# 单列去重值上限:超过则截断(防基数过大列把前端下拉撑爆)
+COLUMN_UNIQUE_LIMIT = 5000
+
+
+def column_unique(
+    table_id: str,
+    column: str,
+    headerRow: int | None = None,
+    skipRows: list[list[int]] | None = None,
+    filters: dict[str, list[str]] | None = None,
+) -> tuple[list[dict[str, Any]], bool]:
+    """取某列的去重值 + 每个值的重复数目(按数目降序)。
+
+    范围:在「应用 headerRow/skipRows 剔除 + filters(其他列)筛选」后的可见行集合上分组计数。
+    filters 应由调用方排除「本列」——本列已选值不传入,使计数反映按其他列筛选后该值出现次数
+    (本列已选值也能看到它的总数)。列值统一 cast Utf8 字符串化。
+
+    返回 (values, truncated):
+    - values: [{value: str, count: int}],按 count 降序;count = 该值在筛选后可见行里的出现次数。
+    - truncated: True 表示去重值超过 COLUMN_UNIQUE_LIMIT 被截断,前端应提示。
+    """
+    parquet_path, _ = _cache_paths(table_id)
+    if not parquet_path.exists():
+        raise FileNotFoundError(f"缓存不存在,请先 /api/table/open: tableId={table_id}")
+
+    skip_norm = _normalize_skip_rows(skipRows)
+    effective_header = headerRow if (headerRow is not None and headerRow > 0) else None
+    filters_schema = _normalize_filters(parquet_path, filters, effective_header)
+
+    schema_col = _config_col_to_schema_col(parquet_path, column, effective_header)
+    if schema_col is None:
+        return [], False
+
+    lazy = pl.scan_parquet(parquet_path)
+    raw_row_count = lazy.select(pl.len()).collect().item()
+    effective = _effective_rows(raw_row_count, effective_header, skip_norm)
+    if filters_schema:
+        effective = _apply_filters_effective(parquet_path, effective, filters_schema)
+    if not effective:
+        return [], False
+
+    # 在筛选后有效行集合上,对该列 cast 字符串后分组计数(降序)
+    expr = pl.col("row_index").is_in(list(effective))
+    col_str = pl.col(schema_col).cast(pl.String, strict=False).fill_null("")
+    grouped = (
+        lazy.with_row_index("row_index")
+        .filter(expr)
+        .group_by(col_str.alias("__v"))
+        .agg(pl.len().alias("__c"))
+        .sort("__c", descending=True)
+        .collect()
+    )
+    values_raw = grouped["__v"].to_list()
+    counts_raw = grouped["__c"].to_list()
+    truncated = len(values_raw) > COLUMN_UNIQUE_LIMIT
+    out: list[dict[str, Any]] = []
+    for v, c in zip(values_raw[:COLUMN_UNIQUE_LIMIT], counts_raw[:COLUMN_UNIQUE_LIMIT]):
+        out.append({"value": "" if v is None else str(v), "count": int(c)})
+    return out, truncated
 
 
 # ───────────────────────── search_table ─────────────────────────
