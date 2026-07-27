@@ -36,7 +36,8 @@
 }
 
 /* 浅色主题:覆盖颜色变量(字体跨主题一致,不覆盖)。
-   accent 加深为 #5a7d1f(电石绿在白底需加深保证对比度,全局生效含图标/角标/激活态)。 */
+   电石绿 accent 在白底需加深以保证对比度(#c8e663 在白底仅 ~1.6:1 不可读),取 #7da630(亮电石绿);
+   accent-soft/accent-dim 配套调,使选中/hover/开关激活态在亮底可辨。dark 仍是 #c8e663。 */
 [data-theme="light"] {
   --bg: #ffffff;
   --bg-panel: #f7f8f9;
@@ -49,9 +50,9 @@
   --text-muted: #5a636b;
   --text-dim: #8a939a;
 
-  --accent: #5a7d1f;
-  --accent-soft: rgba(90, 125, 31, 0.14);
-  --accent-dim: #b7ce8a;
+  --accent: #7da630;
+  --accent-soft: rgba(125, 166, 48, 0.16);
+  --accent-dim: #a8c470;
 
   --danger: #d64545;
   --warn: #c77d1f;
