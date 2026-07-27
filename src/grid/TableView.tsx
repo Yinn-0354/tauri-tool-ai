@@ -53,6 +53,8 @@ export interface TableViewHandle {
   search: (query: string) => Promise<{ matches: SearchMatch[]; total: number }>;
   /** 跳转到指定 rowIndex/colIndex(infinite 会自动触发未加载行拉取)。 */
   jumpTo: (rowIndex: number, colIndex?: number) => void;
+  /** 一键清空所有冻结(列冻结 + 行冻结)。供工具栏「解冻」按钮调用。 */
+  clearAllFrozen: () => void;
 }
 
 /**
@@ -108,6 +110,7 @@ const TableView = forwardRef<TableViewHandle, TableViewProps>(function TableView
   const filters = useTableStore((s) => s.filters);
   const setFilter = useTableStore((s) => s.setFilter);
   const clearFilter = useTableStore((s) => s.clearFilter);
+  const setHasFrozen = useTableStore((s) => s.setHasFrozen);
 
   // 命中单元格 class 规则:行命中且该列命中 → 加 tt-hit。blame gutter 列(__blame)永远不高亮。
   const cellClassRules = useMemo(
@@ -256,15 +259,35 @@ const TableView = forwardRef<TableViewHandle, TableViewProps>(function TableView
   // 列冻结:冻结至此列 = 该列及左边所有数据列 pin 到左侧(其余取消 pin)。
   // 同时给 grid 根元素加 tt-has-frozen-cols 类,CSS 据此给冻结列上底色
   // (blame 列恒在 pinned-left,需此类区分「只有 blame」与「blame+用户冻结列」两种状态)。
+  // frozenColCount 记录已冻结的数据列数(0=无冻结),供右键菜单判断「该列已冻结→显示解冻」
+  // 及工具栏「一键清空冻结」是否可点。
+  const [frozenColCount, setFrozenColCount] = useState(0);
   const freezeColumn = useCallback((colId: string) => {
     const api = gridRef.current?.api;
     if (!api) return;
     const dataCols = columns.map((c) => c.name);
     const idx = dataCols.indexOf(colId);
+    if (idx < 0) return;
     dataCols.forEach((c, i) => api.setColumnPinned(c, i <= idx ? "left" : null));
+    setFrozenColCount(idx + 1);
     // 给外层容器加 tt-has-frozen-cols,CSS 据此给冻结列(含 blame gutter)上底色
     gridContainerRef.current?.classList.add("tt-has-frozen-cols");
   }, [columns]);
+
+  // 解冻所有列:取消所有数据列 pin,移除容器标记类,frozenColCount 归 0。
+  const unfreezeAllColumns = useCallback(() => {
+    const api = gridRef.current?.api;
+    if (!api) return;
+    columns.forEach((c) => api.setColumnPinned(c.name, null));
+    setFrozenColCount(0);
+    gridContainerRef.current?.classList.remove("tt-has-frozen-cols");
+  }, [columns]);
+
+  // 一键清空全部冻结(列 + 行):供工具栏调用,也供右键菜单的解冻项复用。
+  const clearAllFrozen = useCallback(() => {
+    unfreezeAllColumns();
+    setPinnedTopRows([]);
+  }, [unfreezeAllColumns]);
 
   // 自绘右键菜单状态:右键单元格时记录坐标 + 单元格信息,渲染浮动菜单。
   // ag-Grid 社区版无内置右键菜单(企业版才有),用 onCellContextMenu + 自绘菜单实现。
@@ -274,6 +297,8 @@ const TableView = forwardRef<TableViewHandle, TableViewProps>(function TableView
     colId: string | null;
     rowIndex: number | null;
     value: string;
+    colFrozen: boolean; // 右键的列是否已冻结(决定「冻结至此列」/「解冻此列」)
+    rowFrozen: boolean; // 是否已有冻结行(决定「冻结至此行」/「解冻所有行」)
   } | null>(null);
 
   // 行冻结的 state 与 FREEZE_ROW_MAX 已移至 datasource 之前(供 frozenCount 偏移使用)。
@@ -331,14 +356,19 @@ const TableView = forwardRef<TableViewHandle, TableViewProps>(function TableView
     ev?.preventDefault();
     const colId = params.column?.getColId() ?? null;
     const isBlame = colId === "__blame";
+    // 该列是否已冻结:冻结=该列及左边全部 pin,故 colId 在 columns 中的索引 < frozenColCount 即已冻结。
+    const colIdx = colId ? columns.findIndex((c) => c.name === colId) : -1;
+    const colFrozen = colIdx >= 0 && colIdx < frozenColCount;
     setCtxMenu({
       x: ev?.clientX ?? 0,
       y: ev?.clientY ?? 0,
       colId: isBlame ? null : colId,
       rowIndex: params.node?.rowIndex ?? null,
       value: params.value === null || params.value === undefined ? "" : String(params.value),
+      colFrozen,
+      rowFrozen: pinnedTopRows.length > 0,
     });
-  }, []);
+  }, [columns, frozenColCount, pinnedTopRows.length]);
 
   // 关闭右键菜单(点菜单项后或点别处)
   const closeCtxMenu = useCallback(() => setCtxMenu(null), []);
@@ -440,8 +470,8 @@ const TableView = forwardRef<TableViewHandle, TableViewProps>(function TableView
 
   useImperativeHandle(
     ref,
-    () => ({ loadBlame, exportCsv, search, jumpTo }),
-    [loadBlame, exportCsv, search, jumpTo]
+    () => ({ loadBlame, exportCsv, search, jumpTo, clearAllFrozen }),
+    [loadBlame, exportCsv, search, jumpTo, clearAllFrozen]
   );
 
   // blameLoaded 由 store 驱动(Toolbar 触发 loadBlame → store blameLoaded=true → 本组件列出现)
@@ -450,16 +480,24 @@ const TableView = forwardRef<TableViewHandle, TableViewProps>(function TableView
     if (!blameLoaded) setBlameByLine(new Map());
   }, [blameLoaded]);
 
-  // 切换文件(tableId 变)时清空冻结行与查找高亮:冻结行/偏移与 __rowIndex 都绑定具体文件,
-  // 残留会导致新文件的 datasource 偏移错乱、高亮错位。
+  // 同步「是否有冻结」到 store:列冻结数 >0 或有冻结行任一为真。供工具栏「解冻」按钮决定可点。
+  useEffect(() => {
+    setHasFrozen(frozenColCount > 0 || pinnedTopRows.length > 0);
+  }, [frozenColCount, pinnedTopRows.length, setHasFrozen]);
+
+  // 切换文件(tableId 变)时清空冻结(列+行)与查找高亮:冻结绑定具体文件,
+  // 残留会导致新文件的 datasource 偏移错乱、列 pin 错位、高亮错位。
   useEffect(() => {
     setPinnedTopRows([]);
+    setFrozenColCount(0);
+    gridContainerRef.current?.classList.remove("tt-has-frozen-cols");
     setHits(new Map());
   }, [tableId]);
 
   // 列筛选变化时清空冻结行与查找高亮(按用户决策:应用任何列筛选自动清空冻结行)。
   // 冻结行基于筛选前行号,筛选后行集合变了,保留冻结行会与筛选结果语义冲突;
   // 查找高亮按 __rowIndex 定位,筛选后行号空间变,旧 hits 失效,一并清空。
+  // 列冻结保留(筛选不改列结构),不动 frozenColCount。
   // filters 是 store 对象,引用变化即触发(每列 set/clear 都生成新对象)。
   useEffect(() => {
     setPinnedTopRows([]);
@@ -582,15 +620,27 @@ const TableView = forwardRef<TableViewHandle, TableViewProps>(function TableView
             {ctxMenu.colId && (
               <>
                 <CtxSep />
-                <CtxItem label="冻结至此列" onClick={() => { freezeColumn(ctxMenu.colId!); closeCtxMenu(); }} />
+                <CtxItem
+                  label={ctxMenu.colFrozen ? "解冻此列" : "冻结至此列"}
+                  onClick={() => {
+                    if (ctxMenu.colFrozen) unfreezeAllColumns();
+                    else freezeColumn(ctxMenu.colId!);
+                    closeCtxMenu();
+                  }}
+                />
               </>
             )}
             {ctxMenu.rowIndex !== null && (
               <>
                 <CtxSep />
                 <CtxItem
-                  label="冻结至此行"
+                  label={ctxMenu.rowFrozen ? "解冻所有行" : "冻结至此行"}
                   onClick={async () => {
+                    if (ctxMenu.rowFrozen) {
+                      setPinnedTopRows([]);
+                      closeCtxMenu();
+                      return;
+                    }
                     const ok = await freezeRow(ctxMenu.rowIndex!);
                     if (!ok) {
                       window.alert(
@@ -621,6 +671,15 @@ const TableView = forwardRef<TableViewHandle, TableViewProps>(function TableView
                     }
                     closeCtxMenu();
                   }}
+                />
+              </>
+            )}
+            {(ctxMenu.colFrozen || ctxMenu.rowFrozen) && (
+              <>
+                <CtxSep />
+                <CtxItem
+                  label="清空所有冻结"
+                  onClick={() => { clearAllFrozen(); closeCtxMenu(); }}
                 />
               </>
             )}

@@ -42,6 +42,8 @@ export interface TableState {
   filterEnabled: boolean;
   /** 列筛选状态:列名 → 选中值列表(空数组/缺省=该列未筛选)。多列 AND 组合。 */
   filters: Record<string, string[]>;
+  /** 是否存在冻结(列冻结或行冻结)。供工具栏「解冻」按钮决定可点/显示。由 TableView 写入。 */
+  hasFrozen: boolean;
 
   setBackendUrl: (url: string) => void;
   setTable: (info: {
@@ -71,6 +73,8 @@ export interface TableState {
   clearFilter: (col: string) => void;
   /** 清除所有列筛选。 */
   clearAllFilters: () => void;
+  /** 设置是否有冻结(由 TableView 在冻结状态变化时写入)。 */
+  setHasFrozen: (b: boolean) => void;
   reset: () => void;
 }
 
@@ -93,6 +97,7 @@ export const useTableStore = create<TableState>((set) => ({
 
   filterEnabled: true,
   filters: {},
+  hasFrozen: false,
 
   setBackendUrl: (url) => set({ backendUrl: url }),
   setTable: (info) =>
@@ -111,6 +116,7 @@ export const useTableStore = create<TableState>((set) => ({
       blameLoading: false,
       // 切换文件时清空筛选(筛选绑定具体文件,残留会错位)
       filters: {},
+      hasFrozen: false,
     }),
   setHeaderSkip: (info) =>
     set({ headerRow: info.headerRow, skipRows: info.skipRows }),
@@ -144,6 +150,7 @@ export const useTableStore = create<TableState>((set) => ({
       return { filters: next };
     }),
   clearAllFilters: () => set({ filters: {} }),
+  setHasFrozen: (b) => set({ hasFrozen: b }),
   reset: () =>
     set({
       tableId: null,
@@ -160,5 +167,6 @@ export const useTableStore = create<TableState>((set) => ({
       blameError: null,
       blameLoading: false,
       filters: {},
+      hasFrozen: false,
     }),
 }));

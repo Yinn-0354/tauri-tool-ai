@@ -7,6 +7,7 @@ import {
   BranchesOutlined,
   SearchOutlined,
   FilterOutlined,
+  UnlockOutlined,
 } from "@ant-design/icons";
 import { useTableStore } from "../store/tableStore";
 
@@ -29,6 +30,8 @@ interface ToolbarProps {
   onSearch: (query: string) => Promise<{ matches: SearchMatch[]; total: number }>;
   /** 跳转到指定行/列。 */
   onJumpTo: (rowIndex: number, colIndex: number) => void;
+  /** 一键清空所有冻结(列冻结 + 行冻结)。 */
+  onClearFrozen: () => void;
   /** 是否正在解析文件(打开按钮 loading)。 */
   opening: boolean;
 }
@@ -48,6 +51,7 @@ export default function Toolbar({
   onExportCsv,
   onSearch,
   onJumpTo,
+  onClearFrozen,
   opening,
 }: ToolbarProps) {
   const tableId = useTableStore((s) => s.tableId);
@@ -62,6 +66,7 @@ export default function Toolbar({
   const filters = useTableStore((s) => s.filters);
   const setFilterEnabled = useTableStore((s) => s.setFilterEnabled);
   const clearAllFilters = useTableStore((s) => s.clearAllFilters);
+  const hasFrozen = useTableStore((s) => s.hasFrozen);
 
   const hasTable = tableId !== null;
   // 已筛选的列数(用于开关按钮角标)
@@ -340,6 +345,27 @@ export default function Toolbar({
         >
           {rowCount.toLocaleString()} 行 · {columns.length} 列
         </span>
+      )}
+
+      {/* 一键清空冻结(列冻结 + 行冻结):有冻结时可点,无冻结置灰。 */}
+      {hasTable && (
+        <Tooltip title={hasFrozen ? "清空所有冻结(列 + 行)" : "当前无冻结"}>
+          <Button
+            size="small"
+            icon={<UnlockOutlined />}
+            disabled={!hasFrozen}
+            onClick={onClearFrozen}
+            style={{
+              color: hasFrozen ? "var(--accent)" : "var(--text-dim)",
+              borderColor: hasFrozen ? "var(--accent-dim)" : "var(--border-strong)",
+              background: hasFrozen ? "var(--accent-soft)" : "transparent",
+              fontFamily: "var(--font-mono)",
+              fontSize: 12,
+            }}
+          >
+            解冻
+          </Button>
+        </Tooltip>
       )}
 
       {/* 列筛选总开关(仅 hasTable):开关默认开,开启时表头显示漏斗;关闭则收起漏斗并清空筛选。 */}

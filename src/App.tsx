@@ -202,6 +202,11 @@ export default function App() {
     tableViewRef.current?.jumpTo(rowIndex, colIndex);
   }, []);
 
+  // 一键清空冻结(列+行):调 tableViewRef.current.clearAllFrozen()。
+  const handleClearFrozen = useCallback(() => {
+    tableViewRef.current?.clearAllFrozen();
+  }, []);
+
   const ready = backendUrl !== null && tableId !== null && rowCount !== null;
 
   return (
@@ -245,6 +250,7 @@ export default function App() {
               onExportCsv={handleExportCsv}
               onSearch={handleSearch}
               onJumpTo={handleJumpTo}
+              onClearFrozen={handleClearFrozen}
               opening={loading}
             />
 
