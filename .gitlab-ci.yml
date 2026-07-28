@@ -1,0 +1,37 @@
+# CI/CD:仅 master 分支打版本 tag(如 v1.2.3)时触发,打包 Tauri Windows MSI。
+# 自管 Windows runner(已装 Node 22 / Rust 1.95 / Python 3.11 / VS Build Tools 2022),shell executor。
+# runner 注册时打 tag "windows";若你的 runner 用别的 tag,改下方 tags。
+# 普通分支提交/无 tag 的 master 提交不触发(省资源)。
+
+stages:
+  - build
+
+package-msi:
+  stage: build
+  tags:
+    - windows
+  rules:
+    - if: $CI_COMMIT_TAG =~ /^v\d+\.\d+\.\d+$/
+  script:
+    - |
+      # 从 tag 名取版本(去前缀 v),写回三处配置(package.json / Cargo.toml [package] / tauri.conf.json)
+      $ver = $env:CI_COMMIT_TAG -replace '^v',''
+      Write-Host "构建版本: $ver"
+      # package.json: 只替换顶层 "version"(出现一次)
+      (Get-Content package.json -Raw) -replace '"version":\s*"[^"]*"', "`"version`": `"$ver`"" | Set-Content package.json -NoNewline
+      # Cargo.toml: 'version = "...' 形式仅 [package] 段出现一次(依赖用 version = "2" 在 {} 内不同形态);安全替换
+      (Get-Content src-tauri/Cargo.toml -Raw) -replace 'version = "[^"]*"', "version = `"$ver`"" | Set-Content src-tauri/Cargo.toml -NoNewline
+      # tauri.conf.json: 只替换 "version"(出现一次)
+      (Get-Content src-tauri/tauri.conf.json -Raw) -replace '"version":\s*"[^"]*"', "`"version`": `"$ver`"" | Set-Content src-tauri/tauri.conf.json -NoNewline
+      Write-Host "已写回版本号到三处配置"
+    # 前端依赖 + 构建(beforeBuildCommand 也会跑 npm run build,这里先 ci 保证依赖)
+    - npm ci
+    # PyInstaller 打 Python 后端 sidecar → src-tauri/binaries/backend-<triple>.exe
+    - pwsh -File python-backend/build_sidecar.ps1
+    # Tauri 打包 MSI(externalBin 的 sidecar 已就位,自动打进 bundle)
+    - cd src-tauri; cargo tauri build
+  artifacts:
+    name: "tauri-msi-$CI_COMMIT_TAG"
+    paths:
+      - src-tauri/target/release/bundle/msi/*.msi
+    expire_in: 30 days

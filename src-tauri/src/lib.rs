@@ -31,22 +31,41 @@ fn backend_log_path() -> PathBuf {
     log_dir().join("backend.log")
 }
 
-/// 启动 Python sidecar:python main.py,工作目录指向 python-backend。
-/// stdout/stderr 重定向到日志文件(此前是 Stdio::null,导致 FastAPI 请求日志看不到,调试盲点)。
-fn start_sidecar() -> std::io::Result<Child> {
-    let mut cmd = Command::new("python");
-    cmd.arg("main.py");
-    // 开发期 tauri dev 工作目录为 src-tauri,python-backend 在上一级
-    let cur = env::current_dir()?;
-    let pb = cur.join("../python-backend");
-    cmd.current_dir(&pb);
-    // 重定向到日志文件(append 模式,保留多次启动历史;utf-8 兼容中文)
+/// 定位打包后的 sidecar exe:资源目录下的 backend.exe(由 CI/打包脚本经 bundle.resources 注入)。
+/// dev 期无该资源 → 返回 None,回退 python main.py。
+fn find_bundled_sidecar(app: &tauri::AppHandle) -> Option<PathBuf> {
+    let res_dir = app.path().resource_dir().ok()?;
+    let exe = res_dir.join("backend.exe");
+    if exe.is_file() {
+        Some(exe)
+    } else {
+        None
+    }
+}
+
+/// 启动后端:优先用打包进来的 sidecar exe(生产);找不到则回退 python main.py(dev)。
+/// stdout/stderr 重定向到日志文件;Windows CREATE_NO_WINDOW 不弹控制台。
+/// 端口仍由 Python 写 %TEMP%/tauri-tool-ai-port.txt,Rust 轮询读。
+fn start_sidecar(app: &tauri::AppHandle) -> std::io::Result<Child> {
     let log_path = backend_log_path();
     let log_file = fs::OpenOptions::new()
         .create(true)
         .append(true)
         .open(&log_path)?;
     let log_file_err = log_file.try_clone()?;
+
+    let mut cmd = if let Some(sidecar_exe) = find_bundled_sidecar(app) {
+        // 生产:启动 PyInstaller 打的 sidecar exe(自包含 Python + 依赖)
+        Command::new(sidecar_exe)
+    } else {
+        // dev:回退 python main.py(工作目录指向 python-backend)
+        let mut c = Command::new("python");
+        c.arg("main.py");
+        let cur = env::current_dir()?;
+        let pb = cur.join("../python-backend");
+        c.current_dir(&pb);
+        c
+    };
     cmd.stdout(Stdio::from(log_file)).stderr(Stdio::from(log_file_err));
     #[cfg(windows)]
     {
@@ -105,7 +124,7 @@ pub fn run() {
         .setup(|app| {
             // 启动前删除残留端口文件,避免读到上次 sidecar 的陈旧端口
             let _ = fs::remove_file(env::temp_dir().join(PORT_FILE));
-            let child = start_sidecar()?;
+            let child = start_sidecar(&app.handle())?;
             app.state::<SidecarChild>().0.lock().unwrap().replace(child);
             // 轮询端口文件,直到 Python 就绪(且端口真能连)或超时
             let port = (0..POLL_MAX)

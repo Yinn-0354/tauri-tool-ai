@@ -134,6 +134,27 @@ cd python-backend && pip install -r requirements.txt && python main.py
 
 `cargo tauri dev` 会先执行 `beforeDevCommand`（`npm run dev`）起 Vite，再编译 Rust 启动桌面应用；Rust `setup` 阶段启动 Python sidecar 并轮询端口文件，就绪后通过 `get_backend_url` 传给前端。支持热重载（前端/后端代码改动自动刷新，Rust 改动自动重编译）。
 
+## 打包与发布（CI/CD）
+
+Python 后端用 **PyInstaller 打成独立 exe**，经 **Tauri sidecar 机制**（`tauri.conf.json` 的 `bundle.externalBin` + `tauri-plugin-shell`）打进安装包，产物自包含、无需目标机装 Python。
+
+**发布流程**：在 `master` 分支打版本 tag（如 `v1.2.3`）即可触发 GitLab CI 打包 → `.msi` 作为作业产物供下载。
+```bash
+git tag v1.2.3
+git push origin v1.2.3
+```
+CI（`.gitlab-ci.yml`）从 tag 名取版本号写回 `package.json` / `Cargo.toml` / `tauri.conf.json` 三处，再打包。普通 master 提交不触发 CI。
+
+**本地预打包 sidecar**（CI 前/调试用）：
+```bash
+pwsh -File python-backend/build_sidecar.ps1   # 产 src-tauri/binaries/backend-x86_64-pc-windows-msvc.exe
+cd src-tauri && cargo tauri build              # 出 target/release/bundle/msi/*.msi
+```
+
+**运行前提**：目标机需装 **SVN**（表格 blame 子功能调用 `svn` CLI；非 SVN 用户可忽略）。打包用自管 Windows runner（已装 Node 22 / Rust 1.95 / Python 3.11 / VS Build Tools 2022）。
+
+**已知限制**：PyInstaller `--onefile` 产物可能被部分杀软误报（PyInstaller 固有问题），未做代码签名；如需消除 SmartScreen 警告，后续可配 `bundle.windows.certificateThumbprint` + EV 证书签名。
+
 ## 开发进度与计划
 
 项目经历过一次架构重构：初版（Ant Design Table + pandas + 分页 + `src/modules/` 分页架构）在 `a9fa006` 后被**孤儿分支重置**（`f599b58`），自 `592885a` 起以 AG Grid + polars 重新实现，当前 HEAD 为 `466c3d1`。

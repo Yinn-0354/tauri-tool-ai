@@ -14,3 +14,9 @@ tests/artifacts/
 # tsc -b 把 vite.config.ts 编译出的产物
 vite.config.d.ts
 vite.config.js
+
+# PyInstaller 产物(python-backend 打包中间/最终产物)
+python-backend/build/
+python-backend/dist/
+# Tauri sidecar 二进制(PyInstaller 产物,构建生成不入库)
+src-tauri/binaries/

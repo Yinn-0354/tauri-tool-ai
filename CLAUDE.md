@@ -89,6 +89,12 @@ cargo tauri build    # 桌面安装包
 # Python 后端（通常由 cargo tauri dev 自动启动）
 cd python-backend && pip install -r requirements.txt && python main.py
 
+# 打包发布（CI/CD:打 vX.Y.Z tag 触发,出 MSI）
+#   git tag v1.2.3 && git push origin v1.2.3
+# 本地预打包 sidecar（PyInstaller 打 backend.exe 到 src-tauri/binaries/）
+pwsh -File python-backend/build_sidecar.ps1
+cd src-tauri && cargo tauri build    # 出 target/release/bundle/msi/*.msi
+
 # 验证
 cargo tauri --version
 ```
@@ -102,9 +108,11 @@ cargo tauri --version
 
 - **Sidecar 而非嵌入**：Python 作为独立 FastAPI 进程，通过 HTTP 与前端/Rust 通信。桌面壳只管进程生命周期与端口发现，业务全在 Python + React。
 - **端口发现**：Python 启动后写 `%TEMP%/tauri-tool-ai-port.txt`，Rust 轮询读取并探活端口，通过 Tauri command 传给前端。
+- **打包时 Python sidecar 化**：生产构建用 PyInstaller 把 `python-backend` 打成 `backend-<triple>.exe`，经 Tauri `bundle.externalBin` + `tauri-plugin-shell` 的 `app.shell().sidecar("backend")` 启动（开发期仍可直跑 `python main.py`）。产物自包含，目标机无需装 Python。
 - **AG Grid 虚拟渲染**：百万行级表格用 `infinite row model`，前端 DOM 只持可视页，后端按 `tableId` 切片返回；Parquet 缓存让二次打开近乎零解析。
 - **Parquet 缓存键**：`sha1(path|mtime|size)`，文件未改动直接 mmap 命中，改动自动重解析，无需主动失效。
-- **无自动更新 / 无系统托盘 / 无多标签页**：Rust 层未集成 Tauri Updater、无托盘代码，侧边栏为单视图图标导航（非多标签页容器）。这些是早期规划项，按需再引入。
+- **多标签页**：可同时打开多表，各 tab 状态独立保存（切 tab 卸载非活动 ag-Grid、状态存 store 内存、切回复原），localStorage 持久化 tab 列表与配置，重启恢复。
+- **无自动更新 / 无系统托盘**：Rust 层未集成 Tauri Updater、无托盘代码。按需再引入。
 
 ## 目录结构
 
