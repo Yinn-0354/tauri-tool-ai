@@ -27,8 +27,9 @@ package-msi:
     # 前端依赖 + 构建(beforeBuildCommand 也会跑 npm run build,这里先 ci 保证依赖)
     - npm ci
     # PyInstaller 打 Python 后端 sidecar → src-tauri/binaries/backend-<triple>.exe
-    - pwsh -File python-backend/build_sidecar.ps1
-    # Tauri 打包 MSI(externalBin 的 sidecar 已就位,自动打进 bundle)
+    # 用 powershell(Windows PowerShell 5.1,系统 PATH 必有);不用 pwsh(PS7 仅用户 PATH,runner 服务找不到)
+    - powershell -ExecutionPolicy Bypass -File python-backend/build_sidecar.ps1
+    # Tauri 打包 MSI(sidecar 已就位,由 build_sidecar 注入 bundle.resources 自动打进 bundle)
     - cd src-tauri; cargo tauri build
   artifacts:
     name: "tauri-msi-$CI_COMMIT_TAG"
