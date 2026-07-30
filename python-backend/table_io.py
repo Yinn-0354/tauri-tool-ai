@@ -307,6 +307,23 @@ def _resolve_columns(
     # 列数不匹配时回退
     if len(names) != n_cols:
         return raw_columns
+    # 确定性去重:同名列首次保留原名,第2次起加 _2/_3...
+    # 防止前端 AG Grid 用列名作 field 定位时重名列互相覆盖(看起来"列没数据")。
+    # 确定性保证:同一 headerRow 每次产生相同去重名序列 → _config_col_to_schema_col
+    # 重新 resolve 按名匹配索引与 open_table 返回的列顺序一致,排序/筛选/搜索映射正确。
+    seen: dict[str, int] = {}
+    for i, n in enumerate(names):
+        if n not in seen:
+            seen[n] = 1
+        else:
+            seen[n] += 1
+            cand = f"{n}_{seen[n]}"
+            # 罕见:后缀名本身也是表头真列名,继续递增找未占用的
+            while cand in seen:
+                seen[n] += 1
+                cand = f"{n}_{seen[n]}"
+            names[i] = cand
+            seen[cand] = 1
     return [{"name": names[i], "dtype": dtypes[i]} for i in range(n_cols)]
 
 
