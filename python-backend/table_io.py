@@ -130,9 +130,11 @@ def _read_tab(path: str) -> pl.DataFrame:
     便于 headerRow/skipRows 按原文件行号语义统一处理。
     """
     # 1) utf8-lossy 首读(把无法解码的字节替换为 U+FFFD,不抛错)
+    # quote_char=None:禁用 CSV 引号转义。.tab 是 TSV,字段内含双引号(如 "弗雷"是...)时,
+    # 默认 quote_char='"' 会把双引号当转义起始,报 "not properly escaped"。禁用后引号作普通字符保留。
     df = pl.read_csv(
         path, separator="\t", encoding="utf8-lossy", infer_schema_length=1000,
-        has_header=False,
+        has_header=False, quote_char=None,
     )
     if not _has_excess_replacement(df):
         return df
@@ -142,7 +144,7 @@ def _read_tab(path: str) -> pl.DataFrame:
         try:
             df2 = pl.read_csv(
                 path, separator="\t", encoding=enc, infer_schema_length=1000,
-                has_header=False,
+                has_header=False, quote_char=None,
             )
             if not _has_excess_replacement(df2):
                 return df2
