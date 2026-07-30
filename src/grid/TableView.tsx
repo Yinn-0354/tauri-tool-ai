@@ -562,7 +562,14 @@ const TableView = forwardRef<TableViewHandle, TableViewProps>(function TableView
   // 查找高亮按 __rowIndex 定位,筛选后行号空间变,旧 hits 失效,一并清空。
   // 列冻结保留(筛选不改列结构),不动 frozenColCount。
   // filters 从活动 tab 读,引用变化即触发(每列 set/clear 都生成新对象)。
+  // 注意:effect 首次执行(mount)必须跳过,否则会把刚从 dump 恢复的 pinnedTopRows/hits
+  // 清掉(切 tab 复原失效)。用 ref 跳过首次,仅后续 filters 真变化才清。
+  const firstFiltersRun = useRef(true);
   useEffect(() => {
+    if (firstFiltersRun.current) {
+      firstFiltersRun.current = false;
+      return;
+    }
     setPinnedTopRows([]);
     setHits(new Map());
   }, [filters]);
