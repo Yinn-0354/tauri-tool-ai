@@ -1,5 +1,5 @@
 import { useState, useEffect } from "react";
-import { Button, Tooltip, Input, Spin, Dropdown } from "antd";
+import { Button, Tooltip, Input, Spin, Dropdown, message } from "antd";
 import type { MenuProps } from "antd";
 import {
   FolderOpenOutlined,
@@ -8,6 +8,7 @@ import {
   SearchOutlined,
   FilterOutlined,
   UnlockOutlined,
+  CopyOutlined,
 } from "@ant-design/icons";
 import { useTableStore } from "../store/tableStore";
 
@@ -317,24 +318,43 @@ export default function Toolbar({
         打开表格
       </Button>
 
-      {/* 文件路径(muted, truncated, max-width 40vw) */}
+      {/* 文件路径(muted, truncated, max-width 40vw)+ 旁置复制按钮 */}
       {filePath && (
-        <span
-          style={{
-            color: "var(--text-muted)",
-            fontFamily: "var(--font-mono)",
-            fontSize: 12,
-            overflow: "hidden",
-            textOverflow: "ellipsis",
-            whiteSpace: "nowrap",
-            maxWidth: "40vw",
-            flex: "1 1 auto",
-            minWidth: 0,
-          }}
-          title={filePath}
-        >
-          {filePath}
-        </span>
+        <div style={{ display: "flex", alignItems: "center", gap: 4, flex: "1 1 auto", minWidth: 0 }}>
+          <span
+            style={{
+              color: "var(--text-muted)",
+              fontFamily: "var(--font-mono)",
+              fontSize: 12,
+              overflow: "hidden",
+              textOverflow: "ellipsis",
+              whiteSpace: "nowrap",
+              maxWidth: "40vw",
+              flex: "1 1 auto",
+              minWidth: 0,
+            }}
+            title={filePath}
+          >
+            {filePath}
+          </span>
+          <Tooltip title="复制完整路径">
+            <Button
+              type="text"
+              size="small"
+              icon={<CopyOutlined />}
+              onClick={() => {
+                navigator.clipboard
+                  .writeText(filePath)
+                  .then(() => message.success("已复制路径"))
+                  .catch(() => message.error("复制失败"));
+              }}
+              style={{
+                color: "var(--text-dim)",
+                flex: "0 0 auto",
+              }}
+            />
+          </Tooltip>
+        </div>
       )}
 
       {/* spacer */}

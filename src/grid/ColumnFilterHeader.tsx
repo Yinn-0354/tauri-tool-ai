@@ -61,6 +61,9 @@ export default function ColumnFilterHeader(params: ColumnFilterHeaderParams) {
   const [checked, setChecked] = useState<Set<string>>(() => new Set(selected));
   const [search, setSearch] = useState("");
 
+  // 搜索框 ref:打开下拉时聚焦。antd Input 转发 rc-input 实例,有 focus() 方法。
+  const searchInputRef = useRef<{ focus: () => void } | null>(null);
+
   // 用 otherFilters 作缓存 key:其他列筛选变了,去重值需重拉。本列 selected 不影响拉取(不计入计数范围)。
   const otherKey = useMemo(
     () => JSON.stringify(otherFilters),
@@ -109,6 +112,8 @@ export default function ColumnFilterHeader(params: ColumnFilterHeaderParams) {
         lastFetchedKey.current = fetchKey;
         void fetchValues();
       }
+      // 打开时聚焦搜索框。setTimeout 0 等 antd portal 挂载完成、ref 回调写入实例后再 focus。
+      setTimeout(() => searchInputRef.current?.focus(), 0);
     }
   };
 
@@ -183,6 +188,7 @@ export default function ColumnFilterHeader(params: ColumnFilterHeaderParams) {
       {/* 搜索框 */}
       <div style={{ padding: 8, borderBottom: "1px solid var(--border)" }}>
         <Input
+          ref={searchInputRef as never}
           size="small"
           allowClear
           placeholder="搜索选项"

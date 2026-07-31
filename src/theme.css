@@ -159,10 +159,36 @@ body {
   background: var(--accent-soft);
 }
 
-/* 查找命中单元格高亮:半透明强调背景 + 内嵌强调边框,视觉清晰但不喧宾夺主。 */
+/* 查找命中单元格高亮:不依赖背景对比(冻结列同用 accent-soft 底色会撞色),
+ * 改用强调内嵌边框 + 文字加粗变色,在任意底色上都清晰可辨。 */
 .ag-theme-quartz.tt-grid .tt-hit {
-  background: var(--accent-soft) !important;
-  box-shadow: inset 0 0 0 2px var(--accent);
+  box-shadow: inset 0 0 0 2px var(--accent) !important;
+  color: var(--accent) !important;
+  font-weight: 600 !important;
+}
+
+/* 命中且当前跳转焦点:再加一层 accent 实色文字底,仅靠 color 在白/暗底都够亮,
+ * 避免与 accent-soft 底色混淆。用更高特异性压过冻结列规则。 */
+.ag-theme-quartz.tt-grid.tt-has-frozen-cols .ag-pinned-left-cols-container .tt-hit {
+  box-shadow: inset 0 0 0 2px var(--accent) !important;
+  color: var(--accent) !important;
+  font-weight: 600 !important;
+}
+
+/* 冻结行(floating-top)里的命中单元格:floating-top 单元格背景被设为 transparent(L195),
+ * 命中高亮同样靠边框+文字,不补背景,与冻结行整体浅底不冲突。 */
+.ag-theme-quartz.tt-grid .ag-floating-top .tt-hit {
+  box-shadow: inset 0 0 0 2px var(--accent) !important;
+  color: var(--accent) !important;
+  font-weight: 600 !important;
+}
+
+/* 行列交叉区(冻结列+冻结行)的命中单元格:交叉区本有 accent-dim 底 + 2px accent 边框,
+ * 命中再叠一层 3px accent 边框并加粗文字以区分。特异性 5 类压过 L204 的 4 类。 */
+.ag-theme-quartz.tt-grid.tt-has-frozen-cols .ag-floating-top .ag-pinned-left-cols-container .tt-hit {
+  box-shadow: inset 0 0 0 3px var(--accent) !important;
+  color: var(--accent) !important;
+  font-weight: 700 !important;
 }
 
 /* ---------------------------------------------------------------------------

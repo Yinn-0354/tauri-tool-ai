@@ -13,7 +13,9 @@ import type {
   ICellRendererParams,
   CellClassParams,
   CellContextMenuEvent,
+  CellDoubleClickedEvent,
 } from "@ag-grid-community/core";
+import { App } from "antd";
 import { buildDatasource } from "./datasource";
 import { fetchBlame, authorColor, type BlameLineInfo } from "./blame";
 import ColumnFilterHeader from "./ColumnFilterHeader";
@@ -192,6 +194,27 @@ const TableView = forwardRef<TableViewHandle, TableViewProps>(function TableView
       }
       return def;
     });
+
+    // 行号列:固定最左(在 blame gutter 之后、数据列之前),显示真实有效行号 1-based。
+    // 社区版无内置行号列(企业版才有),用 cellRenderer 自绘。pinned left 保证始终可见且不随横向滚动消失。
+    // 不参与筛选/排序/复制:sortable false、无 filter、无 headerComponent、cellClass 用独立 tt-rowno-cell
+    // (不含 tt-data-cell,故列冻结底色不命中)。用 __rowIndex(0-based,数据行与 pinned 冻结行都自带)+1 显示,
+    // 与 blame 行号语义一致。pinned 冻结行也带 __rowIndex(由 freezeRow 写入 0..N-1),故冻结行行号显示 1..N。
+    const rowNoCol: ColDef = {
+      headerName: "#",
+      field: "__rowNo",
+      pinned: "left",
+      width: 56,
+      minWidth: 40,
+      maxWidth: 80,
+      sortable: false,
+      resizable: false,
+      suppressMovable: true,
+      filter: false,
+      cellClass: "tt-rowno-cell",
+      cellRenderer: rowNoCellRenderer,
+    };
+
     if (blameLoaded) {
       const blameCol: ColDef = {
         headerName: "Blame",
@@ -204,9 +227,9 @@ const TableView = forwardRef<TableViewHandle, TableViewProps>(function TableView
         cellRenderer: blameCellRenderer,
         cellClass: "tt-blame-cell",
       };
-      return [blameCol, ...dataCols];
+      return [blameCol, rowNoCol, ...dataCols];
     }
-    return dataCols;
+    return [rowNoCol, ...dataCols];
   }, [columns, blameLoaded, cellClassRules, filterEnabled, filters, backendUrl, tableId, headerRow, skipRows, setFilter, clearFilter]);
 
   // 冻结行:用 pinnedTopRowData prop(社区版支持),受控 state。
@@ -405,13 +428,14 @@ const TableView = forwardRef<TableViewHandle, TableViewProps>(function TableView
     ev?.preventDefault();
     const colId = params.column?.getColId() ?? null;
     const isBlame = colId === "__blame";
+    const isRowNo = colId === "__rowNo";
     // 该列是否已冻结:冻结=该列及左边全部 pin,故 colId 在 columns 中的索引 < frozenColCount 即已冻结。
     const colIdx = colId ? columns.findIndex((c) => c.name === colId) : -1;
     const colFrozen = colIdx >= 0 && colIdx < frozenColCount;
     setCtxMenu({
       x: ev?.clientX ?? 0,
       y: ev?.clientY ?? 0,
-      colId: isBlame ? null : colId,
+      colId: (isBlame || isRowNo) ? null : colId,
       rowIndex: params.node?.rowIndex ?? null,
       value: params.value === null || params.value === undefined ? "" : String(params.value),
       colFrozen,
@@ -421,6 +445,19 @@ const TableView = forwardRef<TableViewHandle, TableViewProps>(function TableView
 
   // 关闭右键菜单(点菜单项后或点别处)
   const closeCtxMenu = useCallback(() => setCtxMenu(null), []);
+
+  // 双击单元格:复制其内容到剪贴板(blame gutter 列与空值不复制)。
+  // App.useApp() 取根节点 <AntApp> 注入的 message 实例(走 ConfigProvider 主题,优于静态 message)。
+  const { message } = App.useApp();
+  const onCellDoubleClick = useCallback((params: CellDoubleClickedEvent) => {
+    const colId = params.column?.getColId() ?? null;
+    if (colId === "__blame") return; // blame gutter 列双击不复制
+    const v = params.value;
+    if (v === null || v === undefined) return; // 空值不复制
+    const text = String(v);
+    void copyText(text);
+    message.success("已复制");
+  }, [copyText, message]);
 
 
   // 全量 blame:拉一次,按 lineNumber 缓存到组件 state + 写回 store 元信息。
@@ -623,6 +660,28 @@ const TableView = forwardRef<TableViewHandle, TableViewProps>(function TableView
     );
   }
 
+  /** 行号列单元格渲染:显示该行真实有效行号(1-based)。
+   *  数据行与 pinned 冻结行都自带 __rowIndex(0-based,由 datasource/freezeRow 写入);
+   *  无 __rowIndex 时(理论上不存在,防御)显示空。与 blame 行号语义一致(__rowIndex+1)。
+   *  不用 node.rowIndex:infinite 模式下冻结 N 行后数据行 grid rowIndex 已偏移 frozenCount,
+   *  pinned 行 rowIndex 语义不稳。用 DOM 直接创建元素(与 blameCellRenderer 风格一致)。 */
+  function rowNoCellRenderer(params: ICellRendererParams) {
+    const dataIdx = (params.data as { __rowIndex?: number } | undefined)?.__rowIndex;
+    if (dataIdx === undefined || dataIdx === null) return null as unknown as HTMLElement;
+    const span = document.createElement("span");
+    span.textContent = String(dataIdx + 1);
+    span.style.color = "var(--text-dim)";
+    span.style.fontFamily = "var(--font-mono)";
+    span.style.fontSize = "12px";
+    span.style.display = "flex";
+    span.style.alignItems = "center";
+    span.style.justifyContent = "flex-end";
+    span.style.height = "100%";
+    span.style.width = "100%";
+    span.style.paddingRight = "8px";
+    return span;
+  }
+
   return (
     <div style={{ flex: 1, minHeight: 0, overflow: "hidden", display: "flex", position: "relative" }}>
       <div
@@ -650,6 +709,7 @@ const TableView = forwardRef<TableViewHandle, TableViewProps>(function TableView
           onSortChanged={onSortChanged}
           onFirstDataRendered={onFirstDataRendered}
           onCellContextMenu={onCellContextMenu}
+          onCellDoubleClicked={onCellDoubleClick}
           pinnedTopRowData={pinnedTopRows}
         />
       </div>
