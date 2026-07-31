@@ -176,8 +176,18 @@ const TableView = forwardRef<TableViewHandle, TableViewProps>(function TableView
             }
             return o;
           })(),
-          onApply: (values: string[]) => setFilter(c.name, values),
-          onClear: () => clearFilter(c.name),
+          onApply: (values: string[]) => {
+            setFilter(c.name, values);
+            // 应用筛选清冻结行+查找高亮(按用户决策:筛选后行集合变,冻结行/hits 失效)。
+            // 放在用户主动确认处清,而非监听 filters 引用的 effect(后者会把切 tab 复原的冻结行误清)。
+            setPinnedTopRows([]);
+            setHits(new Map());
+          },
+          onClear: () => {
+            clearFilter(c.name);
+            setPinnedTopRows([]);
+            setHits(new Map());
+          },
         };
       }
       return def;
@@ -557,22 +567,9 @@ const TableView = forwardRef<TableViewHandle, TableViewProps>(function TableView
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [tabId]);
 
-  // 列筛选变化时清空冻结行与查找高亮(按用户决策:应用任何列筛选自动清空冻结行)。
-  // 冻结行基于筛选前行号,筛选后行集合变了,保留冻结行会与筛选结果语义冲突;
-  // 查找高亮按 __rowIndex 定位,筛选后行号空间变,旧 hits 失效,一并清空。
-  // 列冻结保留(筛选不改列结构),不动 frozenColCount。
-  // filters 从活动 tab 读,引用变化即触发(每列 set/clear 都生成新对象)。
-  // 注意:effect 首次执行(mount)必须跳过,否则会把刚从 dump 恢复的 pinnedTopRows/hits
-  // 清掉(切 tab 复原失效)。用 ref 跳过首次,仅后续 filters 真变化才清。
-  const firstFiltersRun = useRef(true);
-  useEffect(() => {
-    if (firstFiltersRun.current) {
-      firstFiltersRun.current = false;
-      return;
-    }
-    setPinnedTopRows([]);
-    setHits(new Map());
-  }, [filters]);
+  // 「应用筛选清冻结行+查找高亮」已在 ColumnFilterHeader 的 onApply/onClear 回调里显式做
+  // (用户主动确认才清)。不再用监听 filters 引用的 effect —— 切 tab 复原时 store 的 filters
+  // 引用变化会误触发 effect,把刚从 dump 恢复的 pinnedTopRows 清掉(切 tab 冻结行丢失的根因)。
 
   // 打开提交详情 Modal:从 blameByLine 取该行 revision
   const openCommitDetail = useCallback(
