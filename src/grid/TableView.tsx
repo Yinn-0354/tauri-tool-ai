@@ -666,20 +666,28 @@ const TableView = forwardRef<TableViewHandle, TableViewProps>(function TableView
    *  不用 node.rowIndex:infinite 模式下冻结 N 行后数据行 grid rowIndex 已偏移 frozenCount,
    *  pinned 行 rowIndex 语义不稳。用 DOM 直接创建元素(与 blameCellRenderer 风格一致)。 */
   function rowNoCellRenderer(params: ICellRendererParams) {
+    // 用行数据真实有效行号(0-based),+1 显示。pinned 冻结行也带 __rowIndex(freezeRow 写入 0..N-1)。
+    // 不能用 node.rowIndex:infinite 冻结 N 行后数据行 grid rowIndex 已偏移。返回 ReactNode(JSX),
+    // 不能返回 document.createElement 的原生 DOM(React 不能渲染原生节点为 child)。
     const dataIdx = (params.data as { __rowIndex?: number } | undefined)?.__rowIndex;
-    if (dataIdx === undefined || dataIdx === null) return null as unknown as HTMLElement;
-    const span = document.createElement("span");
-    span.textContent = String(dataIdx + 1);
-    span.style.color = "var(--text-dim)";
-    span.style.fontFamily = "var(--font-mono)";
-    span.style.fontSize = "12px";
-    span.style.display = "flex";
-    span.style.alignItems = "center";
-    span.style.justifyContent = "flex-end";
-    span.style.height = "100%";
-    span.style.width = "100%";
-    span.style.paddingRight = "8px";
-    return span;
+    if (dataIdx === undefined || dataIdx === null) return null;
+    return (
+      <span
+        style={{
+          color: "var(--text-dim)",
+          fontFamily: "var(--font-mono)",
+          fontSize: 12,
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "flex-end",
+          height: "100%",
+          width: "100%",
+          paddingRight: "8px",
+        }}
+      >
+        {dataIdx + 1}
+      </span>
+    );
   }
 
   return (
