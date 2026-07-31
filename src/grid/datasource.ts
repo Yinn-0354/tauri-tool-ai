@@ -95,11 +95,12 @@ export function buildDatasource(opts: {
             endRow: number;
             rowCount: number;
             rows: unknown[][];
+            sourceRows?: number[];
           }>;
         })
         .then((data) => {
           // 返回 rows 为二维数组,顺序与 columns 一致;缺列值可能为 null。
-          // 转 ag-Grid 需要的对象数组:{ [colName]: value },并附 __rowIndex。
+          // 转 ag-Grid 需要的对象数组:{ [colName]: value },并附 __rowIndex 与 __sourceRow。
           const objectRows = data.rows.map((arr, rowI) => {
             const obj: Record<string, unknown> = {};
             colNames.forEach((name, colJ) => {
@@ -107,6 +108,12 @@ export function buildDatasource(opts: {
             });
             // 真实有效行号(0-based)。reqStart 已含冻结偏移,故 = 该行在原数据集中的真实行号。
             obj.__rowIndex = reqStart + rowI;
+            // 1-based 源行号(=parquet 原始行号+1,=文件行号)。供行号列显示与 blame gutter 对齐。
+            // 缺失时回退 reqStart+rowI+1(防御,理论上后端总会返回)。
+            obj.__sourceRow =
+              data.sourceRows && data.sourceRows[rowI] !== undefined
+                ? data.sourceRows[rowI]
+                : reqStart + rowI + 1;
             return obj;
           });
           // lastRow 同样扣除冻结行数,否则 ag-Grid 会继续尝试加载已冻结的行段。

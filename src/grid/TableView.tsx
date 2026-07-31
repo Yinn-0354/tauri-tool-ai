@@ -13,12 +13,11 @@ import type {
   ICellRendererParams,
   CellClassParams,
   CellContextMenuEvent,
-  CellDoubleClickedEvent,
 } from "@ag-grid-community/core";
-import { App } from "antd";
 import { buildDatasource } from "./datasource";
 import { fetchBlame, authorColor, type BlameLineInfo } from "./blame";
 import ColumnFilterHeader from "./ColumnFilterHeader";
+import ReadonlySelectCellEditor from "./ReadonlySelectCellEditor";
 import type { TableColumnMeta } from "../store/tableStore";
 import { useTableStore } from "../store/tableStore";
 import CommitDetailModal from "../components/CommitDetailModal";
@@ -159,6 +158,12 @@ const TableView = forwardRef<TableViewHandle, TableViewProps>(function TableView
         sortable: true, // 开启排序 UI;实际排序由 onSortChanged 拦截走后端(社区版 infinite 不自动透传)
         cellClassRules,
         cellClass: "tt-data-cell", // 数据列标记类:冻结列样式只命中此类的单元格,排除 blame gutter
+        // 双击进入只读 cellEditor:浮层 textarea 展示完整值,可手动 Ctrl+C 复制,不改数据。
+        // isCancelAfterEnd=true 保证退出不写回。__blame/__rowNo 列不加 editable,保持双击无反应。
+        editable: true,
+        cellEditor: ReadonlySelectCellEditor,
+        cellEditorPopup: true,
+        cellEditorPopupPosition: "over",
       };
       if (filterEnabled) {
         // 自绘表头:列名 + 漏斗图标(点击弹该列筛选下拉)。社区版无 Set Filter,自行实现。
@@ -401,7 +406,7 @@ const TableView = forwardRef<TableViewHandle, TableViewProps>(function TableView
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(body),
       });
-      const d = (await resp.json()) as { rows: unknown[][] };
+      const d = (await resp.json()) as { rows: unknown[][]; sourceRows?: number[] };
       d.rows.forEach((arr, i) => {
         const obj: Record<string, unknown> = {};
         columns.forEach((c, j) => {
@@ -410,6 +415,9 @@ const TableView = forwardRef<TableViewHandle, TableViewProps>(function TableView
         // pinned 行真实有效行号 = 0..rowIndex(与未冻结数据行号一致),
         // 供 blame/高亮/提交详情统一按 __rowIndex 定位。
         obj.__rowIndex = i;
+        // 1-based 源行号(=文件行号)。pinned 行取响应 sourceRows[i],缺失回退 i+1。
+        obj.__sourceRow =
+          d.sourceRows && d.sourceRows[i] !== undefined ? d.sourceRows[i] : i + 1;
         rows.push(obj);
       });
     } catch {
@@ -446,18 +454,9 @@ const TableView = forwardRef<TableViewHandle, TableViewProps>(function TableView
   // 关闭右键菜单(点菜单项后或点别处)
   const closeCtxMenu = useCallback(() => setCtxMenu(null), []);
 
-  // 双击单元格:复制其内容到剪贴板(blame gutter 列与空值不复制)。
-  // App.useApp() 取根节点 <AntApp> 注入的 message 实例(走 ConfigProvider 主题,优于静态 message)。
-  const { message } = App.useApp();
-  const onCellDoubleClick = useCallback((params: CellDoubleClickedEvent) => {
-    const colId = params.column?.getColId() ?? null;
-    if (colId === "__blame") return; // blame gutter 列双击不复制
-    const v = params.value;
-    if (v === null || v === undefined) return; // 空值不复制
-    const text = String(v);
-    void copyText(text);
-    message.success("已复制");
-  }, [copyText, message]);
+  // 双击数据单元格的「直接复制 toast」交互已移除:数据列改用只读 cellEditor(ReadonlySelectCellEditor)
+  // 接管双击——浮层 textarea 展示完整值,用户手动 Ctrl+C 复制,不改数据(isCancelAfterEnd=true)。
+  // __blame/__rowNo 列不加 editable,双击无反应(符合现状)。
 
 
   // 全量 blame:拉一次,按 lineNumber 缓存到组件 state + 写回 store 元信息。
@@ -610,8 +609,8 @@ const TableView = forwardRef<TableViewHandle, TableViewProps>(function TableView
 
   // 打开提交详情 Modal:从 blameByLine 取该行 revision
   const openCommitDetail = useCallback(
-    (rowIndex: number) => {
-      const info = blameByLine.get(rowIndex + 1);
+    (sourceRow: number) => {
+      const info = blameByLine.get(sourceRow);
       if (info) {
         setModalRevision(info.revision);
         setModalOpen(true);
@@ -622,16 +621,18 @@ const TableView = forwardRef<TableViewHandle, TableViewProps>(function TableView
 
   /** blame gutter 单元格渲染:作者@rev,按作者染色;点击打开 CommitDetailModal。 */
   function blameCellRenderer(params: ICellRendererParams) {
-    // 用行数据真实有效行号(0-based),+1 得 blame lineNumber(1-based)。
+    // blame lineNumber 是文件 1-based 行号 = 源行号 __sourceRow。
     // 不能用 node.rowIndex:冻结后数据行 rowIndex 已偏移 frozenCount,pinned 行 rowIndex 语义不稳。
-    const dataIdx = (params.data as { __rowIndex?: number } | undefined)?.__rowIndex ?? 0;
+    // openCommitDetail 也按 __sourceRow 查(=lineNumber),不再用有效序号+1(有表头/跳过行时会错位)。
+    const sourceRow =
+      (params.data as { __sourceRow?: number } | undefined)?.__sourceRow ?? 0;
     const byLine = params.context?.blameByLine as
       | Map<number, BlameLineInfo>
       | undefined;
     const openFn = params.context?.openCommitDetail as
-      | ((rowIndex: number) => void)
+      | ((sourceRow: number) => void)
       | undefined;
-    const info = byLine?.get(dataIdx + 1);
+    const info = byLine?.get(sourceRow);
     if (!info) return null as unknown as HTMLElement;
     const color = authorColor(info.author);
     return (
@@ -640,7 +641,7 @@ const TableView = forwardRef<TableViewHandle, TableViewProps>(function TableView
         title={`${info.author} @ r${info.revision} · ${info.date} · 点击查看提交详情`}
         onClick={(e) => {
           e.stopPropagation();
-          openFn?.(dataIdx);
+          openFn?.(sourceRow);
         }}
       >
         <span
@@ -660,17 +661,23 @@ const TableView = forwardRef<TableViewHandle, TableViewProps>(function TableView
     );
   }
 
-  /** 行号列单元格渲染:显示该行真实有效行号(1-based)。
-   *  数据行与 pinned 冻结行都自带 __rowIndex(0-based,由 datasource/freezeRow 写入);
-   *  无 __rowIndex 时(理论上不存在,防御)显示空。与 blame 行号语义一致(__rowIndex+1)。
+  /** 行号列单元格渲染:显示该行源行号(1-based,=文件行号)。
+   *  数据行与 pinned 冻结行都自带 __sourceRow(由 datasource/freezeRow 写入);
+   *  无 __sourceRow 时回退 __rowIndex+1(防御,理论上总会带 __sourceRow)。
+   *  与 blame gutter 行号语义一致(__sourceRow=blame lineNumber=文件行号)。
    *  不用 node.rowIndex:infinite 模式下冻结 N 行后数据行 grid rowIndex 已偏移 frozenCount,
    *  pinned 行 rowIndex 语义不稳。用 DOM 直接创建元素(与 blameCellRenderer 风格一致)。 */
   function rowNoCellRenderer(params: ICellRendererParams) {
-    // 用行数据真实有效行号(0-based),+1 显示。pinned 冻结行也带 __rowIndex(freezeRow 写入 0..N-1)。
+    // 优先用 __sourceRow(源行号,1-based,=文件行号);无则回退 __rowIndex+1(防御)。
     // 不能用 node.rowIndex:infinite 冻结 N 行后数据行 grid rowIndex 已偏移。返回 ReactNode(JSX),
     // 不能返回 document.createElement 的原生 DOM(React 不能渲染原生节点为 child)。
-    const dataIdx = (params.data as { __rowIndex?: number } | undefined)?.__rowIndex;
-    if (dataIdx === undefined || dataIdx === null) return null;
+    const data = params.data as
+      | { __sourceRow?: number; __rowIndex?: number }
+      | undefined;
+    const src = data?.__sourceRow;
+    const idx = data?.__rowIndex;
+    const display = src !== undefined && src !== null ? src : idx !== undefined && idx !== null ? idx + 1 : null;
+    if (display === null) return null;
     return (
       <span
         style={{
@@ -685,7 +692,7 @@ const TableView = forwardRef<TableViewHandle, TableViewProps>(function TableView
           paddingRight: "8px",
         }}
       >
-        {dataIdx + 1}
+        {display}
       </span>
     );
   }
@@ -707,6 +714,7 @@ const TableView = forwardRef<TableViewHandle, TableViewProps>(function TableView
           datasource={datasource}
           cacheBlockSize={100}
           maxBlocksInCache={10}
+          stopEditingWhenCellsLoseFocus={true}
           defaultColDef={{
             resizable: true,
             minWidth: 80,
@@ -717,7 +725,6 @@ const TableView = forwardRef<TableViewHandle, TableViewProps>(function TableView
           onSortChanged={onSortChanged}
           onFirstDataRendered={onFirstDataRendered}
           onCellContextMenu={onCellContextMenu}
-          onCellDoubleClicked={onCellDoubleClick}
           pinnedTopRowData={pinnedTopRows}
         />
       </div>

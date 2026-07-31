@@ -318,9 +318,10 @@ export default function Toolbar({
         打开表格
       </Button>
 
-      {/* 文件路径(muted, truncated, max-width 40vw)+ 旁置复制按钮 */}
+      {/* 文件路径(muted, truncated)+ 紧邻复制按钮。路径 flex:0 1 auto(按内容宽,不撑满),
+        否则会把复制按钮推到最右、与路径分离;超长才截断,复制按钮始终紧贴路径尾。 */}
       {filePath && (
-        <div style={{ display: "flex", alignItems: "center", gap: 4, flex: "1 1 auto", minWidth: 0 }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 2, flex: "0 1 auto", minWidth: 0 }}>
           <span
             style={{
               color: "var(--text-muted)",
@@ -330,7 +331,7 @@ export default function Toolbar({
               textOverflow: "ellipsis",
               whiteSpace: "nowrap",
               maxWidth: "40vw",
-              flex: "1 1 auto",
+              flex: "0 1 auto",
               minWidth: 0,
             }}
             title={filePath}

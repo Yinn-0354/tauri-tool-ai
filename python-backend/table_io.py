@@ -538,7 +538,7 @@ def read_rows(
     headerRow: int | None = None,
     skipRows: list[list[int]] | None = None,
     filters: dict[str, list[str]] | None = None,
-) -> tuple[list[list[Any]], int]:
+) -> tuple[list[list[Any]], int, list[int]]:
     """对缓存 Parquet 取二维行数组,可选按列排序,并应用 headerRow/skipRows 剔除与列筛选。
 
     有效数据行 = 原始行去掉 headerRow 行 + skipRows 段(1-based 闭区间,与 headerRow 重叠只算一次),
@@ -550,7 +550,9 @@ def read_rows(
     后续直接按索引取行。筛选 hash 必须入 key,否则筛选后命中未筛选的旧索引→行序错乱。
 
     filters: {配置列名: [值,...]},值统一按字符串比较(列值 cast Utf8)。
-    返回 (rows, rowCount):rows 为二维数组,顺序与 columns 一致,空值 None;rowCount 为筛选+剔除后行数。
+    返回 (rows, rowCount, sourceRows):rows 为二维数组,顺序与 columns 一致,空值 None;
+    rowCount 为筛选+剔除后行数;sourceRows 为每行对应的 1-based 源行号(=parquet 原始行号+1),
+    顺序与 rows 严格一一对应,供前端行号列显示与 blame gutter 对齐(源行号=文件行号)。
     """
     parquet_path, _ = _cache_paths(table_id)
     if not parquet_path.exists():
@@ -573,9 +575,9 @@ def read_rows(
 
     length = max(0, end_row - start_row)
     if length == 0:
-        return [], row_count
+        return [], row_count, []
     if start_row < 0 or start_row >= row_count:
-        return [], row_count
+        return [], row_count, []
 
     if sort_col:
         # 把配置后的列名映射回 parquet schema 列名(polars has_header=False 时 schema 列名为 column_N)
@@ -589,6 +591,7 @@ def read_rows(
         if sort_order is not None:
             # sort_order: 排序后位置 → 有效原始行号(0-based)
             wanted_orig = sort_order[start_row : start_row + length]
+            source_rows = [r + 1 for r in wanted_orig]
             # 按 wanted_orig 顺序从 parquet 取行
             wanted_set = list(dict.fromkeys(wanted_orig))  # 去重保序
             with_idx = lazy.with_row_index("row_index")
@@ -598,19 +601,28 @@ def read_rows(
             ordered_rows: list[tuple] = [None] * len(wanted_orig)  # type: ignore[list-item]
             for pos, orig_row_idx in enumerate(wanted_orig):
                 ordered_rows[pos] = rows_raw[row_to_pos[orig_row_idx]]
-            return [[_to_jsonable(v) for v in row] for row in ordered_rows], row_count
+            return (
+                [[_to_jsonable(v) for v in row] for row in ordered_rows],
+                row_count,
+                source_rows,
+            )
 
     # 无排序:有效行序号映射到原始行号取数
     wanted_orig = effective[start_row : start_row + length]
+    source_rows = [r + 1 for r in wanted_orig]
     if not wanted_orig:
-        return [], row_count
+        return [], row_count, []
     wanted_set = list(dict.fromkeys(wanted_orig))
     with_idx = lazy.with_row_index("row_index")
     df = with_idx.filter(pl.col("row_index").is_in(wanted_set)).collect()
     row_to_pos = {r: i for i, r in enumerate(df["row_index"].to_list())}
     rows_raw = df.drop("row_index").rows()
     ordered_rows = [rows_raw[row_to_pos[orig]] for orig in wanted_orig]
-    return [[_to_jsonable(v) for v in row] for row in ordered_rows], row_count
+    return (
+        [[_to_jsonable(v) for v in row] for row in ordered_rows],
+        row_count,
+        source_rows,
+    )
 
 
 # ───────────────────────── column_unique(列去重+计数) ─────────────────────────

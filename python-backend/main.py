@@ -105,7 +105,7 @@ def table_data(req: TableDataRequest):
     if req.endRow <= req.startRow:
         raise HTTPException(status_code=400, detail="endRow 必须大于 startRow")
     try:
-        rows, row_count = table_io.read_rows(
+        rows, row_count, source_rows = table_io.read_rows(
             table_id=req.tableId,
             start_row=req.startRow,
             end_row=req.endRow,
@@ -124,6 +124,7 @@ def table_data(req: TableDataRequest):
         "endRow": req.endRow,
         "rowCount": row_count,
         "rows": rows,
+        "sourceRows": source_rows,
     }
 
 
