@@ -49,7 +49,7 @@ const ReadonlySelectCellEditor = forwardRef<EditorHandle, ICellEditorParams>(
         defaultValue={value}
         readOnly
         spellCheck={false}
-        wrap="off"
+        wrap="soft"
         onClick={(e) => (e.target as HTMLTextAreaElement).select()}
         onKeyDown={(e) => {
           // Escape/Enter 退出;Ctrl/Cmd+C 走浏览器原生,不拦截
@@ -63,20 +63,27 @@ const ReadonlySelectCellEditor = forwardRef<EditorHandle, ICellEditorParams>(
         }}
         onBlur={stop}
         style={{
-          width: "100%",
+          // 宽度:不跟随单元格(单元格可能很窄),给较大最小宽 + 不超视口
+          minWidth: 320,
+          maxWidth: "60vw",
+          // 高度:最小一行,最大 320px;超出则纵向滚动
           minHeight: 28,
           maxHeight: 320,
-          padding: "2px 6px",
+          padding: "4px 8px",
           resize: "vertical",
           fontFamily: "var(--font-mono)",
           fontSize: 13,
+          lineHeight: 1.4,
           color: "var(--text)",
           background: "var(--bg-elevated)",
           border: "1px solid var(--border-strong)",
           borderRadius: 4,
           outline: "none",
-          overflow: "auto",
-          whiteSpace: "pre",
+          // 文本自动换行(不横向滚动);纵向超 maxHeight 才滚动
+          whiteSpace: "pre-wrap",
+          wordBreak: "break-all",
+          overflowX: "hidden",
+          overflowY: "auto",
           cursor: "text",
         }}
       />
