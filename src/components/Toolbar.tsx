@@ -136,8 +136,7 @@ export default function Toolbar({
   };
 
   // Dropdown overlay:输入框 + 结果列表 + 底部统计。
-  // 用 menu prop(AntD v5 Dropdown 推荐用 menu.items),但此处 overlay 是自定义非菜单内容,
-  // 用 dropdownRender 更合适。但 AntD v5 Dropdown 支持 dropdownRender。
+  // overlay 是自定义非菜单内容,用 popupRender 渲染(AntD v6;v5 叫 dropdownRender)。
   const searchOverlay = (
     <div
       style={{
@@ -271,9 +270,9 @@ export default function Toolbar({
     </div>
   );
 
-  // AntD v5 Dropdown:用 dropdownRender 渲染自定义 overlay,trigger=click。
-  // menu 留空(AntD v5 MenuProps 要求非空,这里用 dropdownRender 时 menu 可省略,
-  // 但 TS 类型要求 menu 或 dropdownRender 之一;实际 dropdownRender 是 Dropdown 的合法 prop。)
+  // AntD v6 Dropdown:用 popupRender 渲染自定义 overlay,trigger=click(v5 叫 dropdownRender,v6 改名)。
+  // menu 留空(MenuProps 要求非空,这里用 popupRender 时 menu 可省略,
+  // 但 TS 类型要求 menu 或 popupRender 之一;实际 popupRender 是 Dropdown 的合法 prop。)
   const dropdownMenu: MenuProps = { items: [] };
 
   return (
@@ -427,7 +426,7 @@ export default function Toolbar({
       {hasTable && (
         <Dropdown
           menu={dropdownMenu}
-          dropdownRender={() => searchOverlay}
+          popupRender={() => searchOverlay}
           trigger={["click"]}
           open={searchOpen}
           onOpenChange={(o) => setSearchOpen(o)}

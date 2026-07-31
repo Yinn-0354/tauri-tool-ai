@@ -7,7 +7,7 @@ import { FilterOutlined } from "@ant-design/icons";
  * ag-Grid 自绘表头:列名 + 漏斗图标(点击弹该列筛选下拉)。
  *
  * 社区版无 Set Filter(企业版 agSetColumnFilter),这里自行实现"多选值筛选"。
- * 点漏斗 → antd Dropdown(dropdownRender)弹一个面板:搜索框 + 带重复数目的 checkbox 列表 +
+ * 点漏斗 → antd Dropdown(popupRender,AntD v6;v5 叫 dropdownRender)弹一个面板:搜索框 + 带重复数目的 checkbox 列表 +
  * 全选/反选 + 重置/确认。确认 → onApply(选中值);重置 → onClear。
  *
  * headerComponentParams(由 TableView 注入,见 columnDefs):
@@ -306,7 +306,7 @@ export default function ColumnFilterHeader(params: ColumnFilterHeaderParams) {
         trigger={["click"]}
         open={open}
         onOpenChange={handleOpenChange}
-        dropdownRender={() => overlay}
+        popupRender={() => overlay}
         placement="bottomRight"
       >
         <span
