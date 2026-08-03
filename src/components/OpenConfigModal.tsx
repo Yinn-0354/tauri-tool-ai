@@ -95,32 +95,13 @@ export default function OpenConfigModal({
     onSubmit({ headerRow, skipRows: fromSegs(segs) });
   };
 
-  const modalStyleBg = {
-    background: "var(--bg-elevated)",
-    border: "1px solid var(--border-strong)",
-    borderRadius: 8,
-    color: "var(--text)",
-  } as const;
-
   return (
     <Modal
       open={open}
       onCancel={onCancel}
       width={520}
-      title={
-        <span style={{ fontFamily: "var(--font-mono)", color: "var(--accent)" }}>
-          表格配置
-        </span>
-      }
-      styles={{
-        root: modalStyleBg,
-        header: {
-          background: "var(--bg-elevated)",
-          borderBottom: "1px solid var(--border)",
-        },
-        body: { background: "var(--bg-elevated)" },
-        mask: { background: "rgba(0,0,0,.6)" },
-      }}
+      title="表格配置"
+      className="tt-modal"
       footer={
         <div style={{ display: "flex", gap: 8, justifyContent: "flex-end" }}>
           <Button onClick={onSkip} style={{ flex: "0 0 auto" }}>

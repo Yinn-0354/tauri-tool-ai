@@ -30,9 +30,9 @@
   --danger: #ff6b6b;
   --warn: #e8a33d;
 
-  /* 字体栈:UI/body 用 Plex Sans;数据/品牌/数字用 Plex Mono;CJK 回退系统字体 */
-  --font-sans: "IBM Plex Sans", "PingFang SC", "Microsoft YaHei", sans-serif;
-  --font-mono: "IBM Plex Mono", ui-monospace, monospace;
+  /* 字体栈:全局统一微软雅黑(--font-sans / --font-mono 同值,保留双变量名兼容现有引用) */
+  --font-sans: "Microsoft YaHei", sans-serif;
+  --font-mono: "Microsoft YaHei", sans-serif;
 }
 
 /* 浅色主题:覆盖颜色变量(字体跨主题一致,不覆盖)。
@@ -231,4 +231,86 @@ body {
   background: var(--accent-dim) !important;
   box-shadow: inset 0 0 0 2px var(--accent);
   font-weight: 500;
+}
+
+/* ===========================================================================
+ * antd Modal 全局统一样式(Carbon Terminal)—— 所有弹窗共用一套
+ *
+ * 用法:<Modal className="tt-modal" ...>  (className 落在 .ant-modal)
+ *
+ * DOM:.ant-modal-root(全屏) > .ant-modal-mask + .ant-modal-wrap > .ant-modal
+ *      > .ant-modal-container > .ant-modal-close / header / body / footer
+ *
+ * 为何不用 styles.root:antd v6 的 styles.root 作用于【全屏 .ant-modal-root】
+ * 而非可见卡片 .ant-modal-container;给 root 加 background/border/radius 会让
+ * 灰底溢满全屏、卡片边缘错位、关闭按钮悬停背景层叠错乱。统一改用本全局类。
+ * =========================================================================== */
+
+/* 遮罩:半透明黑(:has 限定只作用于带 tt-modal 的弹窗根) */
+.ant-modal-root:has(.tt-modal) .ant-modal-mask {
+  background: rgba(0, 0, 0, 0.6) !important;
+}
+
+/* 卡片容器:可见盒子。三段式(header/body/footer 各自带 padding),
+ * container 只管底色 + 边框 + 圆角 + 阴影;overflow:hidden 让圆角裁切段底色。 */
+.tt-modal .ant-modal-container {
+  background: var(--bg-elevated) !important;
+  border: 1px solid var(--border-strong) !important;
+  border-radius: 8px !important;
+  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.45) !important;
+  padding: 0 !important;
+  overflow: hidden;
+}
+
+/* 头部:底色 + 下分隔线,上圆角 */
+.tt-modal .ant-modal-header {
+  background: var(--bg-elevated) !important;
+  border-bottom: 1px solid var(--border) !important;
+  border-radius: 8px 8px 0 0 !important;
+  margin: 0 !important;
+  padding: 14px 20px !important;
+}
+
+/* 标题:电石绿 + 等宽,长名换行 */
+.tt-modal .ant-modal-title {
+  color: var(--accent) !important;
+  font-family: var(--font-mono) !important;
+  font-size: 14px !important;
+  word-break: break-all;
+}
+
+/* 主体:上下左右内边距,文字不再顶格 */
+.tt-modal .ant-modal-body {
+  background: var(--bg-elevated) !important;
+  padding: 20px !important;
+  color: var(--text);
+}
+
+/* 底部:底色 + 上分隔线,下圆角 */
+.tt-modal .ant-modal-footer {
+  background: var(--bg-elevated) !important;
+  border-top: 1px solid var(--border) !important;
+  border-radius: 0 0 8px 8px !important;
+  margin: 0 !important;
+  padding: 12px 20px !important;
+}
+
+/* 关闭按钮:从卡片边缘内缩 12px(不再卡边),尺寸 28,圆角 4;
+ * hover 用电石绿半透底 + accent 图标,干净一层,无层叠错位。 */
+.tt-modal .ant-modal-close {
+  top: 12px !important;
+  inset-inline-end: 12px !important;
+  width: 28px !important;
+  height: 28px !important;
+  border-radius: 4px !important;
+  color: var(--text-dim) !important;
+  background: transparent !important;
+}
+.tt-modal .ant-modal-close:hover {
+  color: var(--accent) !important;
+  background: var(--accent-soft) !important;
+}
+.tt-modal .ant-modal-close .ant-modal-close-x {
+  font-size: 14px;
+  line-height: 28px;
 }

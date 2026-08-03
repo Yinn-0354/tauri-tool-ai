@@ -91,25 +91,8 @@ export default function CommitDetailModal({
       onCancel={onClose}
       footer={null}
       width={560}
-      title={
-        <span style={{ fontFamily: "var(--font-mono)", color: "var(--accent)" }}>
-          {revision ? `r${revision}` : "提交详情"}
-        </span>
-      }
-      styles={{
-        root: {
-          background: "var(--bg-elevated)",
-          border: "1px solid var(--border-strong)",
-          borderRadius: 8,
-          color: "var(--text)",
-        },
-        header: {
-          background: "var(--bg-elevated)",
-          borderBottom: "1px solid var(--border)",
-        },
-        body: { background: "var(--bg-elevated)" },
-        mask: { background: "rgba(0,0,0,.6)" },
-      }}
+      title={revision ? `r${revision}` : "提交详情"}
+      className="tt-modal"
     >
       {loading ? (
         <div style={{ padding: 24, textAlign: "center" }}>

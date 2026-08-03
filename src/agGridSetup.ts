@@ -18,6 +18,3 @@ import "@ag-grid-community/styles/ag-theme-quartz.css";
 
 // Carbon Terminal 主题 token + 全局 body + ag-Grid tt-grid 覆盖(纵向线/紧凑/hover/选中/滚动条)
 import "./theme.css";
-
-// IBM Plex 字体本地打包(UI 用 Plex Sans variable,数据用 Plex Mono 400/500)。
-import "./fonts";
