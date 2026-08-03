@@ -12,6 +12,9 @@ import TabBar from "./components/TabBar";
 import EmptyState from "./components/EmptyState";
 import TableView, { type TableViewHandle } from "./grid/TableView";
 import OpenConfigModal, { type TableOpenConfig } from "./components/OpenConfigModal";
+import { useNavStore } from "./store/navStore";
+import CheckerView from "./components/CheckerView";
+import CheckerSettingsModal from "./components/CheckerSettingsModal";
 
 /**
  * Carbon Terminal 主题根布局。
@@ -29,6 +32,12 @@ export default function App() {
   const backendUrl = useTableStore((s) => s.backendUrl);
   const activeTab = useActiveTab();
   const openTab = useTableStore((s) => s.openTab);
+  const active = useNavStore((s) => s.active);
+  const checkerSettingsOpen = useNavStore((s) => s.checkerSettingsOpen);
+  const setCheckerSettingsOpen = useNavStore(
+    (s) => s.setCheckerSettingsOpen,
+  );
+  const bumpEnvVersion = useNavStore((s) => s.bumpEnvVersion);
   const setBackendUrl = useTableStore((s) => s.setBackendUrl);
   const setStatus = useTableStore((s) => s.setStatus);
   const setError = useTableStore((s) => s.setError);
@@ -223,8 +232,7 @@ export default function App() {
         algorithm: theme === "light" ? antdTheme.defaultAlgorithm : antdTheme.darkAlgorithm,
         token: {
           ...antdToken,
-          fontFamily:
-            '"IBM Plex Sans","PingFang SC","Microsoft YaHei",sans-serif',
+          fontFamily: '"Microsoft YaHei", sans-serif',
           borderRadius: 6,
         },
       }}
@@ -250,95 +258,117 @@ export default function App() {
               overflow: "hidden",
             }}
           >
-            <Toolbar
-              onOpen={handleOpen}
-              onFetchBlame={handleFetchBlame}
-              onExportCsv={handleExportCsv}
-              onSearch={handleSearch}
-              onJumpTo={handleJumpTo}
-              onClearFrozen={handleClearFrozen}
-              opening={loading}
-            />
-
-            {/* 标签栏:仅在有 tab 时显示。切换/关闭/新开。 */}
-            <TabBar onOpen={handleOpen} />
-
-            {/* 顶部 2px 进度条:仅在打开解析中显示 */}
-            {loading && (
-              <div
-                style={{
-                  height: 2,
-                  flex: "0 0 2px",
-                  background: "var(--accent)",
-                  boxShadow: "0 0 8px var(--accent)",
-                }}
-              />
-            )}
-
-            {/* error 横幅:显示活动 tab 的错误 */}
-            {error && (
-              <div
-                style={{
-                  flex: "0 0 auto",
-                  background: "rgba(255,107,107,.12)",
-                  color: "var(--danger)",
-                  borderBottom: "1px solid var(--border)",
-                  padding: "6px 12px",
-                  fontFamily: "var(--font-mono)",
-                  fontSize: 12,
-                  display: "flex",
-                  alignItems: "center",
-                  justifyContent: "space-between",
-                  gap: 8,
-                }}
-              >
-                <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                  {error}
-                </span>
-                <button
-                  onClick={() => setError(null)}
+            {active === "checker" ? (
+              backendUrl ? (
+                <CheckerView backendUrl={backendUrl} />
+              ) : (
+                <div
                   style={{
-                    background: "transparent",
-                    border: "none",
-                    color: "var(--danger)",
-                    cursor: "pointer",
+                    flex: 1,
+                    display: "flex",
+                    alignItems: "center",
+                    justifyContent: "center",
+                    color: "var(--text-dim)",
                     fontFamily: "var(--font-mono)",
-                    fontSize: 12,
+                    fontSize: 13,
                   }}
                 >
-                  关闭
-                </button>
-              </div>
-            )}
-
-            {/* 主区:flex 1 + min-height:0 + overflow:hidden,仅 ag-Grid 内部滚动 */}
-            <div
-              style={{
-                flex: 1,
-                minHeight: 0,
-                overflow: "hidden",
-                display: "flex",
-                background: "var(--bg)",
-              }}
-            >
-              {ready && activeTab ? (
-                <TableView
-                  key={activeTab.id}
-                  ref={tableViewRef}
-                  tabId={activeTab.id}
-                  backendUrl={backendUrl!}
-                  tableId={activeTab.tableId!}
-                  rowCount={activeTab.rowCount!}
-                  columns={activeTab.columns}
-                  filePath={activeTab.filePath}
-                  headerRow={activeTab.headerRow}
-                  skipRows={activeTab.skipRows}
-                  blameLoaded={activeTab.blameLoaded}
+                  后端连接中…
+                </div>
+              )
+            ) : (
+              <>
+                <Toolbar
+                  onOpen={handleOpen}
+                  onFetchBlame={handleFetchBlame}
+                  onExportCsv={handleExportCsv}
+                  onSearch={handleSearch}
+                  onJumpTo={handleJumpTo}
+                  onClearFrozen={handleClearFrozen}
+                  opening={loading}
                 />
-              ) : (
-                <EmptyState onOpen={handleOpen} loading={loading} />
-              )}
-            </div>
+
+                {/* 标签栏:仅在有 tab 时显示。切换/关闭/新开。 */}
+                <TabBar onOpen={handleOpen} />
+
+                {/* 顶部 2px 进度条:仅在打开解析中显示 */}
+                {loading && (
+                  <div
+                    style={{
+                      height: 2,
+                      flex: "0 0 2px",
+                      background: "var(--accent)",
+                      boxShadow: "0 0 8px var(--accent)",
+                    }}
+                  />
+                )}
+
+                {/* error 横幅:显示活动 tab 的错误 */}
+                {error && (
+                  <div
+                    style={{
+                      flex: "0 0 auto",
+                      background: "rgba(255,107,107,.12)",
+                      color: "var(--danger)",
+                      borderBottom: "1px solid var(--border)",
+                      padding: "6px 12px",
+                      fontFamily: "var(--font-mono)",
+                      fontSize: 12,
+                      display: "flex",
+                      alignItems: "center",
+                      justifyContent: "space-between",
+                      gap: 8,
+                    }}
+                  >
+                    <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                      {error}
+                    </span>
+                    <button
+                      onClick={() => setError(null)}
+                      style={{
+                        background: "transparent",
+                        border: "none",
+                        color: "var(--danger)",
+                        cursor: "pointer",
+                        fontFamily: "var(--font-mono)",
+                        fontSize: 12,
+                      }}
+                    >
+                      关闭
+                    </button>
+                  </div>
+                )}
+
+                {/* 主区:flex 1 + min-height:0 + overflow:hidden,仅 ag-Grid 内部滚动 */}
+                <div
+                  style={{
+                    flex: 1,
+                    minHeight: 0,
+                    overflow: "hidden",
+                    display: "flex",
+                    background: "var(--bg)",
+                  }}
+                >
+                  {ready && activeTab ? (
+                    <TableView
+                      key={activeTab.id}
+                      ref={tableViewRef}
+                      tabId={activeTab.id}
+                      backendUrl={backendUrl!}
+                      tableId={activeTab.tableId!}
+                      rowCount={activeTab.rowCount!}
+                      columns={activeTab.columns}
+                      filePath={activeTab.filePath}
+                      headerRow={activeTab.headerRow}
+                      skipRows={activeTab.skipRows}
+                      blameLoaded={activeTab.blameLoaded}
+                    />
+                  ) : (
+                    <EmptyState onOpen={handleOpen} loading={loading} />
+                  )}
+                </div>
+              </>
+            )}
           </div>
         </div>
 
@@ -351,6 +381,20 @@ export default function App() {
           onSkip={onConfigSkip}
           onCancel={onConfigCancel}
         />
+
+        {/* 配置检查器全局设置弹窗(Sidebar 齿轮触发,任何视图都可见)。
+            backendUrl 未就绪时不渲染(避免无后端时空弹窗);就绪后才挂。 */}
+        {backendUrl && (
+          <CheckerSettingsModal
+            open={checkerSettingsOpen}
+            backendUrl={backendUrl}
+            onClose={() => setCheckerSettingsOpen(false)}
+            onSaved={() => {
+              /* 保存成功:自增 envVersion,通知 CheckerView 重拉环境徽标。 */
+              bumpEnvVersion();
+            }}
+          />
+        )}
       </AntApp>
     </ConfigProvider>
   );

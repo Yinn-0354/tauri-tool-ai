@@ -9,3 +9,5 @@ python-calamine>=0.8.0    # calamine 引擎本体(fastexcel 依赖)
 xlsxwriter>=3.0.0          # polars DataFrame.write_excel 写 .xlsx
 chardet>=5.0.0             # .tab/.txt 非 utf8 编码探测兜底
 charset-normalizer>=3.0.0  # chardet 备选探测库
+# 配置检查器(模块2)
+claude-agent-sdk>=0.1.0   # 第三层审核:Python Claude Agent SDK(spawn CLI 子进程,glm-5.2[1M] 经网关)

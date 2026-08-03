@@ -1,0 +1,354 @@
+# 配置检查器模块 · 需求文档（PRD）
+
+> 状态：需求整理稿，待审。本文档不改动任何源代码，仅固化 grilling 过程中与产品负责人逐条确认的决策。
+> 最后更新：2026-08-03
+> 模块在侧边栏的占位与阶段 0 stub 已落地（`src/components/CheckerView.tsx`、`src/store/checkerStore.ts`、`python-backend/main.py` 的 `POST /api/checker/report`）。本文档定义从 stub 到真实闭环的目标形态。
+>
+> **实现进度**：
+> - 阶段 1（第一二层 + 第三层 mock SSE 闭环）：✅ 已落地。
+> - 阶段 2.1（第三层接真 Claude Agent SDK，无截图 MCP）：✅ 已落地（`python-backend/checker/audit.py` 真 `_run_audit` + `script_reader.py` 本地函数工具 `read_check_script` + `src-tauri/src/lib.rs` 退出清 `D:\temp\tauri-checker` + `AuditPanel.tsx` 动态步）。已用本机 `~/.claude/settings.json` 凭证经 GLM 网关端到端跑通（真生成口语对话 + 会话日志 JSONL）。审核时 Claude 仅连本地 `read_check_script`，不连截图 MCP（待阶段 2.2），`screenshot` 恒 null。
+> - 阶段 2.2（截图 MCP server：Rust/Tauri 内 HTTP 常驻 7 工具 + Tauri event 往返 + html2canvas 截隐藏 AG Grid + App.tsx 双挂载隐藏 TableView）：⏳ 未实现，是核心难点。
+
+---
+
+## 0. 一句话定义
+
+用户输入平台核对报告链接（+ 可选规则名）→ 工具展示该报告的规则汇总与逐条错误 → 用户在任一错误行点【审核结果】→ 前端把该行错误信息 + 规则顶层信息（规则名、模块等）+ 规则需求描述 + 脚本相对路径一并传给后端 → 后端起 Claude Agent，**Claude 不再回头调 rulecheck MCP**，仅连本地截图 MCP 去"现场开表 + 冻结ID列 + 滚到错误处 + 核验信息齐全 + 截图"，并在觉得需要时调用本地 `read_check_script` 工具按脚本相对路径读取检查脚本逻辑加强理解，结合以上信息生成发给策划的口语对话，连同截图一起返回展示。
+
+---
+
+## 1. 三层交互形态
+
+| 层 | 触发 | 谁干活 | 展示 |
+|---|---|---|---|
+| 第一层 汇总 | 输入报告链接+可选规则名，点【拉取结果】 | **后端直连 rulecheck MCP**（不经过 Claude），按规则名过滤后透传 | 每条规则一个可折叠区块，字段：规则名、模块、错误数、执行时间、首次报错时间、创建人、测试负责人、是否通过 |
+| 第二层 错误列表 | 点区块左侧【展开结果】 | 纯前端展开折叠（数据已在第一层拿到） | 该规则的 errorObj 列表，字段：配置表、字段（name）、错误信息 |
+| 第三层 审核 | 点某条错误最右侧【审核结果】 | **Claude Agent SDK** 介入。前端把该行 errorObj + 规则顶层信息 + 规则需求描述 + 脚本相对路径传给后端，后端起 Claude；Claude 仅连本地截图 MCP 做核查+截图，按需调本地 `read_check_script` 读脚本逻辑 | 行内展开面板：上方进度流水，下方口语对话+截图 |
+
+### 1.1 第一层细则
+- **规则名可选**：填了 → 后端本地按 `rule_name` **精确匹配**返回对应规则；没填 → 返回全部规则。
+- **"是否通过"** 按 `error_count == 0` 判断。通过的规则**没有**【展开结果】按钮（无错误可展）。
+- 前端只负责拿到内容渲染表格，不做过滤逻辑。
+
+### 1.2 第二层细则
+- 每条规则默认**折叠**。通过（`error_count==0`）的规则无展开按钮。
+- 展开后每条 errorObj 一行，字段：配置表（`table_path`）、字段（`name`）、错误信息（`value`）。
+- 每行最右侧有【审核结果】按钮。
+
+### 1.3 第三层细则（审核）
+- 点【审核结果】→ 该行**行内展开**面板：
+  - 上半：进度流水（SSE `step` 事件渲染，带图标：开表✓ → 冻结ID列✓ → 跳转✓ → 核验✓ → 截图✓ → 生成对话✓）。
+  - 下半：口语对话（一次性返回）+ 截图。
+- **串行**：同时只允许一个审核驱动共享的隐藏表格实例。连点多条时，第 2 条起显示"排队中（前面还有 N 个）"，轮到再开始。
+- **降级**：截图取不到时，`result.screenshot = null` + `screenshotReason`（Claude 兜底生成一句原因），前端显示原因文字 + 无图。
+- 截图在行内面板用**缩略图**展示，点击放大/另存（避免宽图撑爆面板）。
+
+---
+
+## 2. 数据契约（真实 errorObj，替代阶段0 stub）
+
+### 2.1 rulecheck MCP 返回的顶层结构
+```
+{
+  "code": 0,
+  "msg": "success",
+  "data": [                          // 多个规则结果
+    {
+      "rule_name": "书籍资源检查-SourceBoss 引用检查",
+      "rule_id": 1386,
+      "rule_is_deleted": false,
+      "module": ["书籍"],             // 模块
+      "owner": "...",                  // 创建人
+      "status": "fail",
+      "note": {"fails": 89, "message": ""},
+      "result": {
+        "error_count": 89,             // 是否通过 = (error_count==0)
+        "run_time": "...",            // 执行时间
+        "first_detected_time": "...",  // 首次报错时间
+        "author": [],                  // (汇总级,见下)
+        "testLead": [],               // 测试负责人(汇总级)
+        "rule_assigness": [{"id":10,"name":"...","email":"..."}],  // 规则负责人
+        "content": {                   // 表名 → errorObj[]
+          "RecipeBelong.txt": [ ... ]
+        }
+      }
+    }
+  ]
+}
+```
+
+### 2.2 单条 errorObj 结构
+| 字段 | 含义 | 备注 |
+|---|---|---|
+| `table_path` | 配置表名，可能纯文件名或带相对路径（`RecipeBelong.txt` / `client/ui/.../X.txt`） | 用于工作区根路径解析绝对路径 |
+| `rowID` | **行号**，但脚本不规范：可能 `["291"]` / `[291]` / `[-1]`，字符串与数字混用 | `-1` = 某 ID 在表里找不到对应行；不能一见 -1 就跳过，要读 `value` 判断 |
+| `name` | 被检查的列名/字段名 | 大部分时候就是被检查值的列，截图目标列；仍要结合 `value` 判断，不在表里要兜底 |
+| `value` | 大段多行自然语言：含业务字段值（`BookID=50, BookName=《...》`）、问题陈述、`tab取值` 对照、根因 | Claude 理解 + 口语对话生成的唯一输入源 |
+| `author` / `testLead` | 行级负责人（多为 null/[]） | |
+| `desc_hash` | 去重哈希 | |
+
+> ⚠️ 编码：样本文档 `errorObj.txt` 是双重 mojibake 损坏样本，**不代表运行时数据**。运行时 rulecheck MCP 应返回正确 UTF-8 JSON。实现时以真实 MCP 返回为准，不据损坏样本推断字段语义。
+
+> ⚠️ stub 契约 `{id, table, field, row, message, severity}` **全部作废**，前端 store/组件要按上述真实结构改造。**无 severity 字段**，结果列表不分级，统一样式。
+
+---
+
+## 3. 全局设置
+
+新增全局设置（用户可随时修改），存独立配置文件，含两项：
+
+### 3.1 工作区根路径映射：`appkey → 本地根路径`
+- appkey 从报告链接 path 段抠取（如 `https://rulecheck.testplus.cn/project/jw3qptqjb/summary?reportId=9229` → appkey=`jw3qptqjb`）。
+- errorObj 的 `table_path`（纯文件名或相对路径）在工作区根路径下做文件名/相对路径匹配，解析出绝对路径，复用现有 `table_io.py` open → 落 Parquet 缓存 → 拿 tableId + columns。
+- 命中唯一 → 直接用；命中多个 → 候选让 Claude/用户处理；命中零 → 报错"本地找不到该表"。
+
+### 3.2 脚本库根目录（全局单一）
+- 所有 appkey/项目共用一个脚本库根目录。
+- 规则详情里的"脚本相对路径"拼接此根目录得到完整脚本路径，供 Claude 按需读取检查脚本逻辑（见 4.3 `read_check_script`）。
+- 文件不存在/读不到时返回空 + `notFound: true`，不阻断审核。
+
+---
+
+## 4. 截图链路（核心难点）
+
+### 4.1 进程拓扑
+```
+点【审核结果】:前端把 [errorObj + 规则顶层信息 + 规则需求描述 + 脚本相对路径 + appkey] 传后端
+  ▼
+Claude(Python sidecar, Agent SDK, glm-5.2[1M])   ← 错误信息经入参直接喂入,不回头调 rulecheck MCP
+  │ ① 本地函数工具 read_check_script(scriptRelPath)(按需,觉得需要脚本逻辑时才调)
+  │     → 用 [全局脚本库根 + scriptRelPath] 拼完整路径读脚本返回(不存在则 notFound)
+  │ ② 调本地截图 MCP(HTTP,常驻 Tauri 内,端口写文件)现场操作表格+截图
+  ▼
+本地截图 MCP server(Rust/Tauri 壳)   ← 仅含"驱动 WebView + 截图"类工具,read_check_script 不在此
+  │ emit Tauri event ──▶ React WebView
+  │                        ├─ 隐藏存活的 TableView 实例执行冻结/滚动/截图
+  │                        └─ html2canvas 截 AG Grid 根 div → base64
+  │ ◀── Tauri event 回传 base64 ──
+  ▼
+Claude 拿截图 + errorObj.value + 规则需求描述(+按需脚本逻辑)生成口语对话 → 一起返回前端
+```
+
+### 4.2 截图方案：html2canvas 截 DOM
+- 截 AG Grid 的根 div（真实样式 + 真实冻结/滚动状态），**不截窗口**（检查器与表格互斥全屏，截窗口会截到检查器自己）。
+- 截图 = base64 → Rust → Claude。
+- 因此**检查器激活时必须保持一个隐藏存活的 TableView 实例**（否则 AG Grid 没法冻结/滚动/截图）。
+  - 承载方式：**z-index 藏后面**。当前 `App.tsx` 是 `active==="checker" ? CheckerView : 表格视图` 的互斥三元，需改为**两者都挂载**，检查器不透明背景 `z-index` 盖住表格；表格实例正常渲染像素（html2canvas 稳定可截），用户看不见。排除 `display:none`（截出来空白）。
+
+### 4.3 Claude 的工具集
+Claude 的工具来自**两个来源**，语义分离：
+
+**A. 本地截图 MCP server（HTTP，常驻 Tauri 内）—— 仅"驱动隐藏 AG Grid + 截图"类工具（7 个）：**
+
+| 工具 | 作用 | 入参 → 返回 |
+|---|---|---|
+| `open_table(table_path)` | 工作区根解析绝对路径，open 表 | → `{columns[], rowCount, idColCandidates[]}` |
+| `get_columns(table_path)` | 只拿列名（判断 name 在不在、找 ID 列） | → `{columns[]}` |
+| `search_cell(query)` | 全表搜某值定位行（rowID 不可信时回退） | → `{matches:[{rowIndex,colIndex,value}]}` |
+| `freeze_column(colName)` | 冻结某列到左（复用现有 freezeColumn） | → `{ok}` |
+| `goto_cell(rowID_or_rowIndex, colName?)` | 跳到某行某列，触发 infinite 加载 | → `{ok, cellValue}` |
+| `get_viewport_info()` | 读当前视口可见行列/单元格值（**核验"信息齐全"用**） | → `{visibleCols[], visibleRows[], topLeftRow, focusedCell, cells:{...}}` |
+| `screenshot()` | html2canvas 截当前 AG Grid 根 div | → `{imageBase64}` |
+
+**B. Agent SDK 本地函数工具（不走 MCP）—— 文件读取类（1 个）：**
+
+| 工具 | 作用 | 入参 → 返回 |
+|---|---|---|
+| `read_check_script(scriptRelPath)` | 用 [全局脚本库根 + scriptRelPath] 拼完整路径读检查脚本逻辑。Claude **按需**调，不需要时不调省 IO | → `{content, notFound}`（文件不存在/读不到时 `content=""`, `notFound=true`，不阻断审核） |
+
+> 不把 `read_check_script` 塞进截图 MCP：截图 MCP 职责是"操作 WebView + 截图"，读文件与它无关，混进去破坏内聚。Agent SDK 本就支持"本地工具 + MCP 工具"混合给 Claude。
+>
+> 细粒度而非一把梭：把判断权交给 Claude，遇 `name` 不在表、`rowID=-1`、需不需要看脚本等由 Claude 自行决策，不前端硬编码。
+
+### 4.4 截图 MCP 跨进程
+- **HTTP MCP 常驻 Tauri 内**（不用 stdio spawn：spawn 的独立进程够不着 Tauri WebView，发不了 event、截不了 webview）。
+- Rust↔前端往返用 **Tauri event 往返**（Rust emit 给前端执行，前端 emit 回 Rust，Rust await 回传）。
+- 端口发现：Rust 起本地 HTTP MCP 端点，写 `%TEMP%/tauri-tool-ai-mcp-port.txt`，Python sidecar 读端口连。复用现有 sidecar 端口发现机制。
+
+### 4.5 唯一ID列识别（截图"信息齐全"前提）
+- **(c) 优先**：从 errorObj `value` 里 `列名=值` 形式反推主键列名（平台用主键值定位的行，主键列名大概率在 value 里）。
+- **(a) 兜底**：value 里没有 → 扫 columns 找 `*ID`/`*id`/`编号`/`code` 启发式。
+- 都找不到 → 不冻结，截图只截错误列，ID 用文字补在口语对话里。
+- 备注列：扫 columns 找"备注/Note/Comment"启发式。
+
+### 4.6 截图"信息齐全"判定标准（Claude 用 get_viewport_info 核验）
+> 视口同时可见 → 唯一ID列（冻结在左）+ 错误行 + 错误列，且该行 ID 值、错误列值、备注列值（如有备注列）都在屏上 → 截图。不齐就再 freeze/goto 调整，齐了才截。
+
+### 4.7 定位决策（"综合判断"的落地，Claude 编排）
+1. **定表**：`table_path` → 工作区根匹配 → open。
+2. **定行**：`rowID` 正整数 → 候选行号；`-1`/不可解析 → 弃用行号转用 value 业务值 search。**行号需校验**：跳到该行读实际内容与 value 业务字段值比对，对得上才采信，对不上回退 search。
+3. **定列**：`name` 在 columns → 候选列；不在 → 从 value 文本猜；仍校验该列该行值与 value 是否自洽。
+4. **冻结+滚动**：冻结唯一ID列 → goto 错误行+错误列 → get_viewport_info 核验齐全 → 不齐调整 → 齐了 screenshot。
+5. **降级**：实在定位不了 → screenshot 返回 null + Claude 生成"错误信息不规范，无法定位截图"原因，仍生成口语对话。
+
+---
+
+## 5. 第一层 rulecheck MCP 调用
+- **MCP 端点固定** `http://10.11.66.70:7072/mcp`。
+- 报告链接只用来抠 `reportId`（query）和 `appkey`（path），不直接当 MCP URL。
+- 后端调 MCP 工具按 `reportId` 拿全量 `data[]`，**规则名过滤在后端本地做**（不依赖 MCP 支持过滤参数）。
+- **规则详情**：每条规则需额外取其详情（含 `规则需求描述` 直返字段 + `脚本相对路径` 字段），塞进汇总数据一并返回前端，供第三层审核时传给 Claude。
+  - 规则需求描述：MCP 规则详情**直接返回**，不用读文件。
+  - 脚本相对路径：MCP 规则详情直接返回，**只传路径不传内容**；脚本逻辑由 Claude 在审核时按需调 `read_check_script` 读取（见 4.3-B）。
+- **无需鉴权**（内网信任）。
+- rulecheck MCP 的调用**仅在第一层**发生；第三层审核 Claude 不再连 rulecheck MCP。
+
+---
+
+## 6. Claude 会话与凭证
+- **运行时**：Python Claude Agent SDK，跑在现有 sidecar。
+- **角色**：Claude = orchestrator，审核时**仅连本地截图 MCP**（驱动表格 + 截图）。错误信息经审核入参直接喂入，**不回头调 rulecheck MCP**；脚本逻辑经本地函数工具 `read_check_script` 按需读取。（推翻旧阶段 B "Claude 当 MCP server" 的设计，也推翻"Claude 审核时连 rulecheck MCP"的早期设想。）
+- **凭证**：复用本机 `~/.claude/settings.json` 的 `env` 段（同事本机都有同样配置，零配置可分发）：
+  - `ANTHROPIC_AUTH_TOKEN`（Bearer）
+  - `ANTHROPIC_BASE_URL` = `http://120.92.138.34`（内网网关）
+  - `ANTHROPIC_CUSTOM_HEADERS`（多行字符串，parse 成 dict：`x-ksc-company-code`/`ksyun-code-type`/`ksyun-code-version`/`User-Agent`/`Accept`）经 `default_headers` 注入
+  - 注：网关后挂 GLM（glm-5.2）伪装 Anthropic 协议，tool use 已验证可用。
+- **模型**：审核用 `glm-5.2[1M]`（长上下文）。
+- **会话生命周期**：每次审核**新建无状态会话**，跑完销毁。系统提示词后端写死常量（开发者维护，不暴露用户配）。
+- **会话日志**：
+  - 目录 `D:\temp\tauri-checker\<errorObjId>_<时间戳>`。
+  - 存：Claude 完整对话历史（JSONL）+ MCP 工具调用 JSON + 截图 PNG。
+  - 销毁时机：**软件关闭时清掉 `tauri-checker` 目录**（运行期间保留供排查）。
+
+---
+
+## 7. SSE 事件协议（审核进度）
+`POST /api/checker/audit` 返回 SSE 流。
+
+**审核入参（前端点【审核结果】时发后端、后端喂 Claude）**：
+- 该 errorObj：`table_path`、`rowID`、`name`、`value`、`desc_hash`
+- 该规则顶层信息：`rule_name`、`rule_id`、`module`、`owner`、`note`、`status`
+- 规则需求描述（MCP 规则详情直返）
+- 脚本相对路径（MCP 规则详情直返；**只传路径，脚本内容由 Claude 按需 read_check_script 取**）
+- appkey（用于工作区根路径解析）
+
+**事件类型：**
+
+| type | 何时推 | data |
+|---|---|---|
+| `queued` | 排队中 | `{position: N}` |
+| `start` | Claude agent 起来 | `{errorObjId}` |
+| `step` | 每个工具调用开始（含截图 MCP 7 工具 + read_check_script） | `{tool, desc}`（"正在打开配置表"… / "正在读取检查脚本"…） |
+| `step_done` | 工具调用返回 | `{tool, result摘要}` |
+| `result` | 全部完成 | `{conclusion: 口语对话, screenshot: base64\|null, screenshotReason: 原因\|null}` |
+| `error` | 失败 | `{message}` |
+
+- **中粒度**：推 step 流水（开表/冻结/跳转/核验/截图/读脚本(如有)），不推 Claude 中间思考片段。
+- 口语对话**一次性返回**在 `result.conclusion`，不逐字流式。
+- 后端做 SDK 原生事件 → 业务语义事件的映射层，不吐 raw 流。
+
+---
+
+## 8. 验收标准（每条可机器判定）
+
+### 第一层
+- [ ] 输入链接+点拉取 → 后端调 rulecheck MCP 拿 `data[]`，按规则名过滤，前端渲染汇总表格。
+- [ ] 不填规则名返回全部；填了精确匹配返回对应规则。
+- [ ] `error_count==0` 的规则无【展开结果】按钮。
+- [ ] 汇总字段齐全：规则名、模块、错误数、执行时间、首次报错时间、创建人、测试负责人、是否通过。
+- [ ] 每条规则顺带取规则详情（规则需求描述 + 脚本相对路径）一并返回前端，供审核时传 Claude。
+
+### 第二层
+- [ ] 点【展开结果】→ 展开该规则 errorObj 列表，字段：配置表、字段、错误信息。
+- [ ] 默认折叠。
+
+### 第三层（审核）
+- [ ] 点【审核结果】→ 行内展开，进度流水按 step 事件实时显示。
+- [ ] 审核入参含 errorObj + 规则顶层信息 + 规则需求描述 + 脚本相对路径 + appkey；Claude 不回头调 rulecheck MCP。
+- [ ] 串行：第二个审核点显示"排队中"。
+- [ ] 完成后显示口语对话 + 截图缩略图（点开放大）。
+- [ ] 截图取不到时显示原因文字 + 无图。
+- [ ] 截图中视口同时可见：唯一ID列 + 错误行 + 错误列（+备注列如有）。
+- [ ] `rowID=-1` 且 value 挖不出定位时，降级为只生成对话 + "无法定位截图"原因，不硬截错图。
+- [ ] `name` 不在表 columns 时，结合 value 定位；实在不行兜底反馈。
+- [ ] Claude 觉得需要脚本逻辑时调 `read_check_script`（用全局脚本库根 + 相对路径）；脚本不存在返回 notFound 不阻断。
+
+### 凭证/分发/配置
+- [ ] 读本机 `~/.claude/settings.json` 的 env 注入 SDK，零配置。
+- [ ] token 不写进源码/不进 git。
+- [ ] 全局设置含两项：appkey→本地根路径映射 + 全局单一脚本库根目录。
+
+### 日志
+- [ ] 每次审核建 `D:\temp\tauri-checker\<errorObjId>_<时间戳>`。
+- [ ] 存对话历史 + MCP 调用 + 截图 PNG。
+- [ ] 软件关闭时清目录。
+
+---
+
+## 9. 已确认的决策清单（备查）
+
+| # | 决策点 | 结论 |
+|---|---|---|
+| 1 | 架构/运行时 | Claude Python Agent SDK 跑 sidecar，当 orchestrator（推翻旧阶段B server 设计）；审核时仅连本地截图 MCP，错误信息经入参喂入不回头调 rulecheck MCP |
+| 2 | 截图桥归属 | Rust/Tauri 壳（能截 webview、能 emit 事件给前端） |
+| 3 | 本地表来源 | 全局设置 appkey→本地根路径，table_path 在根下匹配解析绝对路径 |
+| 4 | 挑选规则 | **作废**：改为用户在第二层手点【审核结果】逐条触发 |
+| 5 | 检查点分组 | **作废**（随挑选规则作废） |
+| 6 | 截图方案 | (B) html2canvas 截 AG Grid 根 div |
+| 7 | 隐藏表格实例 | 检查器激活时保持隐藏存活实例 |
+| 8 | 工具粒度 | (b) 细粒度 7 个 MCP 工具，Claude 自编排 |
+| 9 | 新形态 | 链接+可选规则名→汇总→展开→逐条审核 |
+| 10 | 第一层 Claude | 不经过 Claude，后端直连 MCP 透传 |
+| 11 | 是否通过 | `error_count==0` |
+| 12 | MCP 调用 | 端点固定 10.11.66.70:7072/mcp，链接抠 reportId+appkey，过滤后端本地做，无鉴权 |
+| 13 | 执行模型 | SSE 流式，中粒度 step 事件 |
+| 14 | 并发 | 串行（共享一个 AG Grid 实例不支持并发），排队显示 |
+| 15 | 会话生命周期 | 每次新会话，跑完销毁，提示词后端写死 |
+| 16 | 凭证 | 复用 ~/.claude/settings.json env 段（方法IV内网网关+自定义头），模型 glm-5.2[1M] |
+| 17 | 跨进程 | 截图 MCP = HTTP MCP 常驻 Tauri 内，Tauri event 往返，端口写文件 Python 读 |
+| 18 | 唯一ID列 | (c)value 反推优先 + (a)列名启发式兜底 |
+| 19 | 定位决策 | 行号优先+业务值校验，对不上回退 search；-1 读 value 判断不硬跳过 |
+| 20 | 日志 | D:\temp\tauri-checker\<id>_<ts>，软件关闭时销毁 |
+| 21 | 隐藏实例承载 | z-index 藏后面（排除 display:none 截图空白） |
+| 22 | 审核结果 UI | 行内展开，截图缩略图点开放大 |
+| 23 | 口语对话 | 一次性返回，不逐字流式 |
+| 24 | 规则详情来源 | 规则需求描述 MCP 直返；脚本相对路径 MCP 直返，只传路径不传内容 |
+| 25 | 检查脚本逻辑获取 | Claude 按需调本地函数工具 `read_check_script`（用全局脚本库根 + 相对路径），不塞进截图 MCP；不存在返回 notFound 不阻断 |
+| 26 | 脚本库根目录 | 全局单一（所有 appkey 共用），与 appkey→项目根映射同级配置 |
+
+---
+
+## 10. 待办与风险
+
+### 待办（实现时再定）
+- [ ] 全局设置 UI 的具体形态（appkey→根路径表编辑 + 全局脚本库根，放在哪个入口）。
+- [ ] rulecheck MCP 实际暴露的 tools 名（需 `list_tools` 探明）：取报告汇总的工具、取单条规则详情（含规则需求描述 + 脚本相对路径）的工具。
+- [ ] html2canvas 对 AG Grid 复杂 DOM 的截图保真度验证。
+- [ ] GLM 网关对 Agent SDK 多轮 tool_use 编排的兼容性实测。
+- [ ] 串行排队的具体 UI（"排队中 N"显示位置、取消排队）。
+- [ ] Claude 系统提示词的具体内容（工具使用顺序、核验标准、降级逻辑、何时该调 read_check_script）。
+- [ ] read_check_script 的健壮性：相对路径拼接安全（防越界）、编码探测（脚本可能非 utf8）、大文件截断策略。
+
+### 已知风险
+- **GLM 经网关伪装 Anthropic 协议**：tool use 已验证可用，但 Agent SDK 的 sub-agent / 流式 tool_use 事件兼容度需实测。
+- **table_path 路径形态不一**（纯文件名 vs 相对路径）：匹配逻辑要兼容两种。
+- **rowID 字符串/数字混用 + -1**：解析要 robust。
+- **截图 MCP 驱动隐藏实例**：AG Grid 在 z-index 后台时的冻结/滚动/截图时序（infinite row model 异步加载未加载块）需小心，goto 后要等行加载完再 get_viewport_info。
+
+---
+
+## 11. 项目代码规范（前端）
+
+> 本节是跨模块通用的前端代码规范，不只针对配置检查器。新增/修改前端组件时必须遵守。
+
+### 11.1 组件复用优先，禁止复制
+- 同一交互形态（弹窗 / 表单 / 列表项 / 工具栏按钮 / 输入框带粘贴 等）只写一份，多处复用，**不复制粘贴**。
+- 复用方式：抽公共组件或公共子组件，差异通过 `props` 配置；跨组件共享的状态用 store / 自定义 hook。
+- 确实需要拆成多个组件时（职责差异大到不便合一），仍要保证它们**共用同一套样式**，不各自带一份。
+
+### 11.2 样式集中管理，禁止就地复制内联 style
+- 重复的样式不散落在各组件的内联 `style` 里，集中放到全局样式表 `src/theme.css`，用语义类名引用。
+- 新增可复用 UI 块：先看 `theme.css` 有无现成类，没有就抽一个语义类，再各处引用，**不要就地复制内联 style**。
+- 这条直接来自一次已踩的坑（见下反例）。
+
+### 11.3 反例与正例（弹窗统一样式）
+
+**反例（已发生）**：4 个弹窗（`CheckerSettingsModal` / `OpenConfigModal` / `CommitDetailModal` / `CheckerView.RuleDetailModal`）各自复制了同一份内联 `styles`，且误用 `styles.root`——antd v6 的 `styles.root` 作用于**全屏 `.ant-modal-root`**，而非可见卡片 `.ant-modal-container`。后果：
+- 灰底 + 边框 + 圆角套到全屏容器 → 灰底溢满全屏
+- 可见卡片没显式 padding → 文字顶格
+- 关闭按钮按 antd 默认算到 `≈2px` → 卡在卡片边缘
+- hover 背景叠在卡片与全屏灰底之间 → 层叠错位
+
+**正例（已修复）**：抽一套全局样式到 `theme.css` 的 `.tt-modal` 类，4 个弹窗统一 `className="tt-modal"`，删掉各自重复的内联 `styles`。可见卡片改用 `.ant-modal-container` 正确选择器，显式给三段式 padding（header/body/footer 各自带）、关闭按钮内缩 12px、hover 用 accent-soft 单层底色。
+
+> 新弹窗一律 `className="tt-modal"`，不要自带内联 `styles`。其他可复用 UI 块同理。

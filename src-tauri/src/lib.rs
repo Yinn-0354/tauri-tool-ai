@@ -16,6 +16,11 @@ const PORT_FILE: &str = "tauri-tool-ai-port.txt";
 const POLL_INTERVAL: Duration = Duration::from_millis(200);
 const POLL_MAX: u32 = 75; // 15s
 
+/// 审核会话日志目录(PRD §6:写死 D:\temp\tauri-checker)。
+/// Python sidecar 审核时按 <errorObjId>_<时间戳> 建子目录存对话/截图;
+/// 软件关闭时由 Rust 主进程清掉(运行期间保留供排查)。崩溃则残留,可接受。
+const CHECKER_LOG_DIR: &str = r"D:\temp\tauri-checker";
+
 /// sidecar 日志目录:%LOCALAPPDATA%/tauri-tool-ai/logs(回退 %TEMP%)
 fn log_dir() -> PathBuf {
     let base = env::var("LOCALAPPDATA")
@@ -159,6 +164,9 @@ pub fn run() {
                     }
                 }
             }
+            // 清理审核会话日志目录(PRD §6:运行期间保留供排查,软件关闭时清)。
+            // 目录由 Python sidecar 审核时写入;Rust 主进程退出(=软件关闭)时删。
+            let _ = fs::remove_dir_all(CHECKER_LOG_DIR);
         }
     });
 }

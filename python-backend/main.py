@@ -15,6 +15,9 @@ from pydantic import BaseModel, Field
 import table_io
 import table_config
 from vcs import svn as svn_blame_mod
+from checker import config as checker_config
+from checker import rulecheck_client
+from checker import audit as checker_audit
 
 PORT_FILE = os.path.join(tempfile.gettempdir(), "tauri-tool-ai-port.txt")
 
@@ -316,6 +319,105 @@ async def vcs_log(req: LogRequest):
     except RuntimeError as e:
         raise HTTPException(status_code=400, detail=str(e))
     return result
+
+
+# ───────────────────────── 模块2 配置检查器 ─────────────────────────
+
+class CheckerReportRequest(BaseModel):
+    reportUrl: str
+    ruleName: str | None = None  # 可选,精确匹配 rule_name;None/空=返回全部
+
+
+@app.post("/api/checker/report")
+async def checker_report(req: CheckerReportRequest):
+    """配置检查器 · 第一层:取平台报告全量规则结果。
+
+    入参 {reportUrl, ruleName?}:
+    - reportUrl:平台报告链接(含 ?reportId=N),如 https://rulecheck.testplus.cn/project/JX3/summary?reportId=9322
+    - ruleName:可选,精确匹配 rule_name 过滤;空/None 返回全部规则
+
+    后端按当前环境(checker-config.json 的 env)选 MCP 端点(prod 10.11.66.70 / dev 10.11.82.207),
+    调 MCP get_all_check_results_in_report(reportId) 拿全量 data[],后端本地按 ruleName 过滤,
+    每条规则补规则详情(get_rule_by_rule_id 拿 ruleDesc + scriptPath)。
+
+    返回 PRD 2.1 结构(每条规则含全字段 + ruleDesc + scriptPath):
+    {
+      "reportId": int, "appkey": str|null,
+      "rules": [{rule_name, rule_id, module, owner, status, note, result:{error_count, content, run_time, first_detected_time, author, testLead, rule_assigness}, ruleDesc, scriptPath}]
+    }
+    """
+    if not req.reportUrl.strip():
+        raise HTTPException(status_code=400, detail="reportUrl 不能为空")
+    try:
+        result = await rulecheck_client.fetch_report(
+            report_url=req.reportUrl,
+            rule_name_filter=req.ruleName,
+        )
+    except ValueError as e:
+        # 链接解析问题(reportId 缺失/非整数)
+        raise HTTPException(status_code=400, detail=str(e))
+    except RuntimeError as e:
+        # MCP 不可达 / 报告不存在 / MCP 返回异常
+        raise HTTPException(status_code=502, detail=str(e))
+    return result
+
+
+# ───────────────────────── 模块2 全局设置 ─────────────────────────
+
+class CheckerConfigRequest(BaseModel):
+    env: str | None = None  # 'prod' / 'dev'
+    # appkey + 分支 → 本地根路径映射(数组,复合键 appkey|branch 唯一)
+    appkeyRoots: list[dict[str, str]] | None = None
+    scriptLibRoot: str | None = None  # 全局脚本库根目录
+
+
+@app.get("/api/checker/config")
+def checker_config_get():
+    """返回当前全局设置 {env, appkeyRoots, scriptLibRoot}。"""
+    return checker_config.get_config()
+
+
+@app.post("/api/checker/config")
+def checker_config_save(req: CheckerConfigRequest):
+    """更新全局设置(任意字段 None 表示不改动),落盘,返回新配置。"""
+    try:
+        return checker_config.set_config(
+            env=req.env,
+            appkey_roots=req.appkeyRoots,
+            script_lib_root=req.scriptLibRoot,
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@app.get("/api/checker/projects")
+async def checker_projects():
+    """取所有项目信息(给全局设置 UI 选 appkey 用)。"""
+    try:
+        return {"projects": await rulecheck_client.get_project_infos()}
+    except RuntimeError as e:
+        raise HTTPException(status_code=502, detail=str(e))
+
+
+@app.get("/api/checker/builtin-branches")
+def checker_builtin_branches(appkey: str | None = Query(default=None)):
+    """返回内置 SVN 分支(后端写死,平台无此维度)。
+
+    - 不带 appkey:返回全量 {appkey: [分支...]}。
+    - 带 appkey:返回该 appkey 的分支列表(无内置则空数组,前端降级允许手填)。
+    """
+    return {"branches": checker_config.get_builtin_branches(appkey)}
+
+
+@app.post("/api/checker/audit")
+async def checker_audit_post(req: checker_audit.AuditRequest):
+    """配置检查器 · 第三层审核:SSE 流。
+
+    前端点【审核结果】时调用,返回 text/event-stream(queued/start/step/step_done/
+    result/error)。阶段 1 mock 事件流(不接真 Claude),阶段 2 替换 _run_audit 内部。
+    串行:同时只允许一个审核跑,第二个先收到 queued 事件排队。
+    """
+    return checker_audit.audit(req)
 
 
 def get_free_port() -> int:

@@ -1,18 +1,27 @@
 import { Tooltip } from "antd";
-import { TableOutlined, CheckCircleOutlined, SunOutlined, MoonOutlined } from "@ant-design/icons";
+import {
+  TableOutlined,
+  CheckCircleOutlined,
+  SunOutlined,
+  MoonOutlined,
+  SettingOutlined,
+} from "@ant-design/icons";
 import { useNavStore } from "../store/navStore";
 import { useThemeStore } from "../store/themeStore";
 
 /**
  * 左侧 56px 图标导航栏。
  * - 模块1 表格查看器(激活):图标 accent + 左侧 3px accent 竖条 + 浅 accent-soft 背景。
- * - 模块2 结果核对器:未实现,禁用态(opacity .4, cursor not-allowed),tooltip "即将开放"。
+ * - 模块2 配置检查器:点击切到核对视图。
  * - 顶部 logo 块(mono "C" 在 accent 色方块里)。
- * - 底部设置图标(可选,目前仅装饰)。
+ * - 底部:主题切换 + 配置检查器全局设置齿轮(Sidebar 触发,弹窗挂 App 层,任何视图可见)。
  */
 export default function Sidebar() {
   const active = useNavStore((s) => s.active);
   const setActive = useNavStore((s) => s.setActive);
+  const setCheckerSettingsOpen = useNavStore(
+    (s) => s.setCheckerSettingsOpen,
+  );
   const theme = useThemeStore((s) => s.theme);
   const toggleTheme = useThemeStore((s) => s.toggle);
 
@@ -58,12 +67,9 @@ export default function Sidebar() {
         icon={<TableOutlined />}
       />
       <NavIcon
-        active={false}
-        disabled
-        onClick={() => {
-          /* 即将开放,不响应点击 */
-        }}
-        label="即将开放"
+        active={active === "checker"}
+        onClick={() => setActive("checker")}
+        label="配置检查器"
         icon={<CheckCircleOutlined />}
       />
 
@@ -93,6 +99,34 @@ export default function Sidebar() {
           }}
         >
           {theme === "dark" ? <SunOutlined /> : <MoonOutlined />}
+        </div>
+      </Tooltip>
+
+      {/* 配置检查器全局设置:齿轮按钮,触发 App 层弹窗 */}
+      <Tooltip title="配置检查器设置" placement="right">
+        <div
+          onClick={() => setCheckerSettingsOpen(true)}
+          style={{
+            width: 36,
+            height: 36,
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            color: "var(--text-muted)",
+            cursor: "pointer",
+            borderRadius: 4,
+            transition: "color .15s, background .15s",
+          }}
+          onMouseEnter={(e) => {
+            e.currentTarget.style.color = "var(--accent)";
+            e.currentTarget.style.background = "var(--accent-soft)";
+          }}
+          onMouseLeave={(e) => {
+            e.currentTarget.style.color = "var(--text-muted)";
+            e.currentTarget.style.background = "transparent";
+          }}
+        >
+          <SettingOutlined />
         </div>
       </Tooltip>
     </div>
