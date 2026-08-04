@@ -6,8 +6,10 @@
 >
 > **实现进度**：
 > - 阶段 1（第一二层 + 第三层 mock SSE 闭环）：✅ 已落地。
-> - 阶段 2.1（第三层接真 Claude Agent SDK，无截图 MCP）：✅ 已落地（`python-backend/checker/audit.py` 真 `_run_audit` + `script_reader.py` 本地函数工具 `read_check_script` + `src-tauri/src/lib.rs` 退出清 `D:\temp\tauri-checker` + `AuditPanel.tsx` 动态步）。已用本机 `~/.claude/settings.json` 凭证经 GLM 网关端到端跑通（真生成口语对话 + 会话日志 JSONL）。审核时 Claude 仅连本地 `read_check_script`，不连截图 MCP（待阶段 2.2），`screenshot` 恒 null。
-> - 阶段 2.2（截图 MCP server：Rust/Tauri 内 HTTP 常驻 7 工具 + Tauri event 往返 + html2canvas 截隐藏 AG Grid + App.tsx 双挂载隐藏 TableView）：⏳ 未实现，是核心难点。
+> - 阶段 2.1（第三层接真 Claude Agent SDK，无截图 MCP）：✅ 已落地（`audit.py` 真 `_run_audit` + `script_reader.py` `read_check_script` + `lib.rs` 退出清 `D:\temp\tauri-checker` + `AuditPanel.tsx` 动态步）。已用本机 GLM 网关端到端跑通。
+> - 阶段 2.2（截图 MCP server + 隐藏 AG Grid + Python 接截图 MCP）：✅ 已落地（`mcp_screenshot.rs` axum HTTP MCP 7 工具 + `ScreenshotGrid.tsx` 隐藏 AG Grid 驱动 + `App.tsx` 双挂载 z-index + `audit.py` 读端口接 `McpHttpServerConfig`）。**已 `cargo tauri dev` 真联调验证通过**（HTTP 直连 initialize/tools/list + Tauri event 往返 + open_table 落 Parquet 缓存 + html2canvas 截出真 PNG + Claude 连截图 MCP 编排 7 工具全链路）。修复一个 SDK 坑：截图大结果被 CLI 持久化到文件（`<persisted-output>`），`audit.py._extract_screenshot_base64` 已兼容读文件解 list 嵌套 JSON。
+> - 阶段 3（AI Agent 对话面板 + Git blame）：⏳ 未实现。
+> - 增量需求 §12（2026-08 grilling）：✅ 已落地。分支识别 getReports（`rulecheck_client.get_reports` + `identify_report_branch_safe`）、多报告标签页（`checkerStore` 按 reportId 键控 + 两级导航）、审核前 svn update（`svn.svn_update` + audit 起点 SSE step）。
 
 ---
 
@@ -26,9 +28,14 @@
 | 第三层 审核 | 点某条错误最右侧【审核结果】 | **Claude Agent SDK** 介入。前端把该行 errorObj + 规则顶层信息 + 规则需求描述 + 脚本相对路径传给后端，后端起 Claude；Claude 仅连本地截图 MCP 做核查+截图，按需调本地 `read_check_script` 读脚本逻辑 | 行内展开面板：上方进度流水，下方口语对话+截图 |
 
 ### 1.1 第一层细则
-- **规则名可选**：填了 → 后端本地按 `rule_name` **精确匹配**返回对应规则；没填 → 返回全部规则。
+- **规则名可选**：填了 → 后端本地按 `rule_name` **精确匹配**返回对应规则；没填 → 返回全部规则。这是**拉取时的数据过滤**，在后端做，与结果区搜索框（见下）不同。
 - **"是否通过"** 按 `error_count == 0` 判断。通过的规则**没有**【展开结果】按钮（无错误可展）。
-- 前端只负责拿到内容渲染表格，不做过滤逻辑。
+- **滚动**：结果区（规则汇总列表）为唯一滚动区，结果过长时上下滚动。沿用布局铁律——根容器 100% 高 + overflow:hidden，仅结果区内滚动（CheckerView 结果区已 `overflow:auto`）。
+- **搜索框（结果区顶部）**：拉取后的**前端本地即时过滤**展示，不经过后端。
+  - 位置：结果区顶部、输入区下方。独立于输入区的"规则名输入框"（后者是拉取时过滤数据，两者语义不同）。
+  - 匹配：**全字段聚合**——关键词（去首尾空格、大小写不敏感；`testLead` 数组 join 成字符串参与匹配）对 `rule_name`/`module`/`owner`/`testLead`/规则需求描述 任一包含即命中；纯数字关键词额外做 `error_count == 数字` 精确匹配（任一命中即显示该规则）；空关键词显示全部。
+  - 交互：输入即时过滤，`debounce` ~200ms；带 **× 清空按钮**（清空恢复全部）；搜索框旁显示**"命中 N / 共 M"**。
+  - 过滤后**只显示命中规则**，未命中隐藏；搜索时**折叠全部命中规则**（只显示第一层汇总，点【展开结果】再看错误列表）。
 
 ### 1.2 第二层细则
 - 每条规则默认**折叠**。通过（`error_count==0`）的规则无展开按钮。
@@ -184,12 +191,13 @@ Claude 的工具来自**两个来源**，语义分离：
 ---
 
 ## 5. 第一层 rulecheck MCP 调用
-- **MCP 端点固定** `http://10.11.66.70:7072/mcp`。
+- **MCP 端点按环境选**（`checker/config.py` `MCP_ENDPOINTS`）：prod=`http://10.11.66.70:7072/mcp`，dev=`http://10.11.82.207:7000/mcp`。全局设置里有 env 切换。
 - 报告链接只用来抠 `reportId`（query）和 `appkey`（path），不直接当 MCP URL。
 - 后端调 MCP 工具按 `reportId` 拿全量 `data[]`，**规则名过滤在后端本地做**（不依赖 MCP 支持过滤参数）。
 - **规则详情**：每条规则需额外取其详情（含 `规则需求描述` 直返字段 + `脚本相对路径` 字段），塞进汇总数据一并返回前端，供第三层审核时传给 Claude。
   - 规则需求描述：MCP 规则详情**直接返回**，不用读文件。
   - 脚本相对路径：MCP 规则详情直接返回，**只传路径不传内容**；脚本逻辑由 Claude 在审核时按需调 `read_check_script` 读取（见 4.3-B）。
+- **分支识别（2026-08 新增，见 §12.1）**：拉取报告时顺带调 MCP `get_reports`，按 reportId 匹配取 branch。
 - **无需鉴权**（内网信任）。
 - rulecheck MCP 的调用**仅在第一层**发生；第三层审核 Claude 不再连 rulecheck MCP。
 
@@ -247,6 +255,9 @@ Claude 的工具来自**两个来源**，语义分离：
 - [ ] `error_count==0` 的规则无【展开结果】按钮。
 - [ ] 汇总字段齐全：规则名、模块、错误数、执行时间、首次报错时间、创建人、测试负责人、是否通过。
 - [ ] 每条规则顺带取规则详情（规则需求描述 + 脚本相对路径）一并返回前端，供审核时传 Claude。
+- [ ] 结果过长时结果区可上下滚动（仅结果区内滚动，根容器不产生页面级滚动条）。
+- [ ] 结果区顶部搜索框：全字段聚合（规则名/模块/创建人/测试负责人/规则需求任一包含即命中）；纯数字关键词额外匹配错误数精确值；大小写不敏感；debounce ~200ms；×清空恢复全部；显示"命中 N / 共 M"。
+- [ ] 搜索过滤后只显示命中规则；搜索时折叠全部命中规则。
 
 ### 第二层
 - [ ] 点【展开结果】→ 展开该规则 errorObj 列表，字段：配置表、字段、错误信息。
@@ -305,6 +316,8 @@ Claude 的工具来自**两个来源**，语义分离：
 | 24 | 规则详情来源 | 规则需求描述 MCP 直返；脚本相对路径 MCP 直返，只传路径不传内容 |
 | 25 | 检查脚本逻辑获取 | Claude 按需调本地函数工具 `read_check_script`（用全局脚本库根 + 相对路径），不塞进截图 MCP；不存在返回 notFound 不阻断 |
 | 26 | 脚本库根目录 | 全局单一（所有 appkey 共用），与 appkey→项目根映射同级配置 |
+| 27 | 结果区滚动 | 结果过长上下滚动，仅结果区内滚动（沿用根容器 overflow:hidden 铁律） |
+| 28 | 结果区搜索框 | 前端本地即时过滤；全字段聚合（纯数字关键词额外精确匹配错误数）；只显示命中规则；搜索时折叠全部；debounce 200ms + ×清空 + 命中 N/共 M |
 
 ---
 
@@ -352,3 +365,108 @@ Claude 的工具来自**两个来源**，语义分离：
 **正例（已修复）**：抽一套全局样式到 `theme.css` 的 `.tt-modal` 类，4 个弹窗统一 `className="tt-modal"`，删掉各自重复的内联 `styles`。可见卡片改用 `.ant-modal-container` 正确选择器，显式给三段式 padding（header/body/footer 各自带）、关闭按钮内缩 12px、hover 用 accent-soft 单层底色。
 
 > 新弹窗一律 `className="tt-modal"`，不要自带内联 `styles`。其他可复用 UI 块同理。
+
+---
+
+## 12. 增量需求（2026-08 grilling，三个新功能）
+
+> 本节是 2026-08 grilling 确认的三个新功能，叠加在阶段 1/2.1/2.2 已落地实现之上。标注 ⏳ 的为待实现，其余为已确认需求。
+
+### 12.1 分支识别（getReports）
+
+**目标**：根据报告 id 识别该报告属于哪个 SVN 分支，取代"用户手填分支"（现状 `BUILTIN_BRANCHES` 手填）。
+
+**MCP 接口**：`get_reports`（MCP 工具 `get_reports`，入参 `{projectId, start_time, end_time}`）。
+
+```
+入参示例:
+{ "projectId": "JX3", "start_time": "2026-07-29", "end_time": "2026-08-04" }
+
+返回数组每项:
+{
+  "id": 9269, "project_id": "JX3",
+  "branch": "branches-rel/b_jx3_released_zhcn_hd",   ← 分支名,与 config.appkeyRoots 的 branch 格式一致
+  "branch_alia": "发布分支",                          ← 分支别名(UI 显示用)
+  "version": "1896039",
+  "success_result_count": 178, "exception_result_count": 0, "fail_result_count": 7,
+  "error_count": 93, "total_rule_count": 185, "total_table_count": 1918,
+  "has_statistic": true, "create_time": "2026-07-29 05:43:20"
+}
+```
+
+**识别流程**：
+1. 拉取报告时顺带调 `get_reports({projectId=appkey, start=今天-7天, end=今天})`。
+2. 在返回数组里按 `id == reportId` 匹配 → 命中 → 取 `branch` + `branch_alia`。
+3. `get_appkey_root(appkey, branch)` 查本地根路径（branch 格式与 config 一致，无需映射层）。
+4. 没命中（报告超 7 天 / 不属于该 projectId）→ **软降级**：回退 `get_appkey_root(appkey, "")` 默认分支；审核照跑，提示用户手填。
+
+**UI**：报告标签旁/详情显示分支 `branch_alia`（如"发布分支"）。用户能确认识别对不对，错了可在设置里纠正。
+
+> 实测（2026-08）：正式环境 MCP `get_reports` 已可用（真调 JX3 7/28~8/4 返回 30+ 篇）。**无需环境特殊处理**，全环境调 getReports；调用失败/匹配不到才降级。
+
+### 12.2 多报告标签页
+
+**目标**：支持同时查看多篇报告，标签页切换（类似表格查看器多 tab）。
+
+**形态**：
+- **两级导航**：顶部一行 = 项目标签（JX3 / mecha…）；下面一行 = 该项目的报告标签（#9269 / #9322…）。对应 getReports 的 `project_id` + `id`。
+- **标签来源**：粘链接→拉取→该篇报告成为一个标签。开下一篇再粘链接再拉取 → 第二个标签。getReports 返回的报告数组**只用于分支识别，不全变标签**。
+- **状态独立**：每标签的报告链接、规则名、拉取结果（rules）、第二层展开、第三层审核缓存**完全独立**，切换不丢。
+
+**持久化**：只存标签**元信息**（报告 `id`/`appkey`/`branch`/`branch_alia`/链接），重启恢复空标签列表，点标签重新拉取。**不持久化** rules 全量 + 审核结果（量大、且审核结果定位是临时）。
+
+**store 改造**：checkerStore 从"全局一份 rules"改成"按 reportId 键控的多份"。
+
+### 12.3 审核前 svn update 到最新
+
+**目标**：每次审核，在读取本地配置表前先把配置表更到最新，避免用旧表核。
+
+**链路**：点【审核结果】→ 后端在审核起点先 `svn update` 被核那张表 → 再起 Claude。update 作为一条 SSE `step` 事件推前端（"正在更新本地表"）。
+
+**范围**：只更新被核那张表（单文件 `svn update <abspath>`）。不进 Claude 工具集（update 是硬前置，不该由 Claude 决策是否调）。
+
+**失败处理（软降级+提示）**：
+- E155007（非工作副本）→ 静默跳过（本地手改表不该 update）。
+- 其他失败（网络/认证 E215004/E175013/锁）→ 提示但不阻断，审核用本地当前版本，结果带 update 状态信息。
+- 实现细节：单文件 update 对"已版本控制文件"可行；表是新建未提交（E155010）时降级尝试父目录 update。
+
+**svn.py 新增**：`svn_update(path)`（复用现有 `asyncio.subprocess` + `--non-interactive` 模式）。
+
+---
+
+## 13. 增量决策清单（备查，2026-08）
+
+| # | 决策点 | 结论 |
+|---|---|---|
+| 29 | getReports 入参/返回 | `{projectId, start_time, end_time}` → 数组含 `id/project_id/branch/branch_alia/version/error_count` |
+| 30 | 分支映射 | 平台 `branch` 与 config `appkeyRoots.branch` 格式一致，无需映射层 |
+| 31 | 分支识别时机 | 拉取报告时顺带调 getReports，按 reportId 匹配取 branch |
+| 32 | 时间范围 | 今天-7天 ~ 今天（够用，不回看超 7 天历史） |
+| 33 | 匹配不到降级 | 回退手填默认分支（get_appkey_root(appkey,"")），软降级+提示，审核照跑 |
+| 34 | 分支显示 | 报告标签/详情显示 branch_alia；错了可在设置纠正 |
+| 35 | 标签来源 | 粘链接逐个成为标签；getReports 数组不全变标签 |
+| 36 | 标签分级 UI | 两级导航：项目行 + 报告行 |
+| 37 | 标签状态 | 各标签 rules/展开/审核缓存完全独立 |
+| 38 | 标签持久化 | 只存元信息，重启恢复空标签列表，点标签重拉 |
+| 39 | svn update 时机 | 后端审核起点做，不进 Claude 工具集，SSE step 事件展示 |
+| 40 | svn update 范围 | 只更新被核那张表（单文件）；新建未提交降级父目录 |
+| 41 | svn update 失败 | E155007 静默跳过；其他软降级+提示不阻断 |
+
+---
+
+## 14. 增量验收标准（每条可机器判定）
+
+### 分支识别
+- [ ] 拉取报告 → 后端调 getReports → 按 reportId 匹配 → 前端显示该报告 branch_alia。
+- [ ] getReports 调用失败或匹配不到 → 回退默认分支 + 提示，审核照跑。
+- [ ] 分支识别结果在标签/详情可见，设置里可纠正。
+
+### 多报告标签页
+- [ ] 两级导航：项目行 + 报告行，点报告标签切换该报告结果。
+- [ ] 粘链接拉取 → 该报告成为一个标签；多个标签状态独立，切换不丢。
+- [ ] 重启应用 → 恢复标签列表（元信息），点标签重新拉取。
+
+### svn update
+- [ ] 点审核 → 后端先 svn update 被核表，SSE 推"正在更新本地表"step 事件。
+- [ ] 非工作副本表 → 跳过 update 不报错。
+- [ ] 其他 update 失败 → 审核照跑 + 提示，结果带 update 状态。

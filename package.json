@@ -23,6 +23,7 @@
     "@tauri-apps/plugin-dialog": "^2",
     "antd": "^6.3.7",
     "axios": "^1.16.0",
+    "html2canvas": "^1.4.1",
     "react": "^19",
     "react-dom": "^19",
     "zustand": "^5"

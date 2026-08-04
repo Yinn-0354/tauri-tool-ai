@@ -143,7 +143,10 @@ function parseFrame(frame: string): { event: string; data: unknown } | null {
 }
 
 export default function AuditPanel({ errorObj, rule, backendUrl }: AuditPanelProps) {
-  const appkey = useCheckerStore((s) => s.appkey);
+  // appkey 从激活标签取(多报告标签页,PRD §12.2)。审核入参里用它解析工作区根路径。
+  const appkey = useCheckerStore(
+    (s) => (s.activeReportId != null ? s.tabs[s.activeReportId]?.appkey ?? null : null),
+  );
   const [phase, setPhase] = useState<Phase>("idle");
   // 动态步:从后端 step 事件累积,真实反映 Claude 调了哪些工具(阶段 2.1 可能只有读脚本,
   // 阶段 2.2 是开表/冻结/跳转/核验/截图)。空数组=还没收到任何 step(result 到达时若仍空,

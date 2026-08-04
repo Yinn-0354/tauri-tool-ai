@@ -420,6 +420,53 @@ async def checker_audit_post(req: checker_audit.AuditRequest):
     return checker_audit.audit(req)
 
 
+# ───────────────────────── 模块2 表格路径解析(截图 MCP 用) ─────────────────────────
+
+
+class ResolveTablePathRequest(BaseModel):
+    appkey: str
+    table_path: str
+
+
+@app.post("/api/checker/resolve-table-path")
+def checker_resolve_table_path(req: ResolveTablePathRequest):
+    """把 table_path(纯文件名或相对路径)按 appkey→根映射解析成绝对路径。
+
+    PRD §3.1:errorObj 的 table_path 可能纯文件名(RecipeBelong.txt)或带相对路径,
+    前端 ScreenshotGrid 的 open_table 用此端点解析后调 /api/table/open。
+    匹配逻辑:在 appkey 对应的根路径下 glob 递归搜同名文件。
+    命中唯一→返回解析后的绝对路径;命中多个→返回第一匹配(并记日志);零命中→404。
+    """
+    import glob as _glob
+    from pathlib import Path as _Path
+
+    root = checker_config.get_appkey_root(req.appkey)
+    if not root:
+        raise HTTPException(status_code=400, detail=f"appkey '{req.appkey}' 未配置工作区根路径,请在全局设置里添加映射")
+    tp = req.table_path.strip()
+    if not tp:
+        raise HTTPException(status_code=400, detail="table_path 为空")
+    root_path = _Path(root)
+    if not root_path.is_dir():
+        raise HTTPException(status_code=400, detail=f"工作区根路径不存在: {root}")
+
+    # 如果 table_path 本身已是绝对路径且存在,直接返回
+    abs_candidate = _Path(tp)
+    if abs_candidate.is_absolute() and abs_candidate.is_file():
+        return {"resolved": str(abs_candidate)}
+
+    # 在根下用 **/<filename> 递归搜
+    pattern = str(root_path / "**" / _Path(tp).name)
+    matches = _glob.glob(pattern, recursive=True)
+    if not matches:
+        raise HTTPException(status_code=404, detail=f"在 {root} 下找不到 {tp} (搜了 {_Path(tp).name})")
+    if len(matches) > 1:
+        log_msg = f"table_path 命中多个: {tp} → {matches[:5]} (取第一个)"
+        app_logger = logging.getLogger("checker_resolve_table_path")
+        app_logger.warning(log_msg)
+    return {"resolved": matches[0]}
+
+
 def get_free_port() -> int:
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
         s.bind(("127.0.0.1", 0))

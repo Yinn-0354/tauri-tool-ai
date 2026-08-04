@@ -6,11 +6,16 @@ use std::sync::Mutex;
 use std::time::Duration;
 use tauri::Manager;
 
+mod mcp_screenshot;
+
 /// 后端 sidecar 端口(随机分配,启动后由 Python 写入临时文件)
 struct BackendPort(Mutex<Option<u16>>);
 
 /// 持有 sidecar 子进程句柄,退出时 kill
 struct SidecarChild(Mutex<Option<Child>>);
+
+/// 持有截图 MCP HTTP server 的 shutdown 手柄,退出时发信号关 axum
+struct McpShutdown(Mutex<Option<tokio::sync::oneshot::Sender<()>>>);
 
 const PORT_FILE: &str = "tauri-tool-ai-port.txt";
 const POLL_INTERVAL: Duration = Duration::from_millis(200);
@@ -126,9 +131,12 @@ pub fn run() {
         )
         .manage(BackendPort(Mutex::new(None)))
         .manage(SidecarChild(Mutex::new(None)))
+        .manage(McpShutdown(Mutex::new(None)))
         .setup(|app| {
             // 启动前删除残留端口文件,避免读到上次 sidecar 的陈旧端口
             let _ = fs::remove_file(env::temp_dir().join(PORT_FILE));
+            // 也清截图 MCP 端口文件(MEDIUM #6:上次崩溃残留的陈旧端口,不清理会导致 Python 读到死端口)
+            let _ = fs::remove_file(env::temp_dir().join("tauri-tool-ai-mcp-port.txt"));
             let child = start_sidecar(&app.handle())?;
             app.state::<SidecarChild>().0.lock().unwrap().replace(child);
             // 轮询端口文件,直到 Python 就绪(且端口真能连)或超时
@@ -139,6 +147,20 @@ pub fn run() {
                 })
                 .ok_or_else(|| std::io::Error::other("timeout waiting for python port"))?;
             app.state::<BackendPort>().0.lock().unwrap().replace(port);
+
+            // ── 起截图 MCP HTTP server(PRD §4.4) ──
+            // axum server 常驻 Tauri 内,端口写临时文件,Python sidecar 读端口
+            // 经 McpHttpServerConfig 连接 Claude agent。
+            let pending = mcp_screenshot::register_response_listener_pending();
+            mcp_screenshot::register_response_listener(&app.handle(), pending.clone());
+            let (mcp_port, shutdown) = tauri::async_runtime::block_on(
+                mcp_screenshot::start_mcp_server(app.handle().clone(), pending),
+            );
+            mcp_screenshot::write_port_file(mcp_port)
+                .expect("写截图 MCP 端口文件失败");
+            app.state::<McpShutdown>().0.lock().unwrap().replace(shutdown);
+            log::info!("截图 MCP server 已启动: http://127.0.0.1:{mcp_port}/mcp");
+
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![get_backend_url, get_backend_log])
@@ -148,6 +170,15 @@ pub fn run() {
     app.run(|app_handle, event| {
         // 退出时 kill sidecar 进程树(主进程 + 其子进程,uvicorn reload 模式会有子进程)
         if matches!(event, tauri::RunEvent::Exit | tauri::RunEvent::ExitRequested { .. }) {
+            // 先关截图 MCP server(发 shutdown 信号给 axum gracefully close)
+            if let Some(state) = app_handle.try_state::<McpShutdown>() {
+                if let Some(tx) = state.0.lock().unwrap().take() {
+                    let _ = tx.send(());
+                }
+            }
+            mcp_screenshot::remove_port_file();
+
+            // 再杀 sidecar 进程树
             if let Some(state) = app_handle.try_state::<SidecarChild>() {
                 if let Some(mut child) = state.0.lock().unwrap().take() {
                     let pid = child.id();

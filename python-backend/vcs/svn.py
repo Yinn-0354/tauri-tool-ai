@@ -158,6 +158,70 @@ async def svn_blame_lines(
     return {ln: by_line[ln] for ln in line_numbers if ln in by_line}
 
 
+# ───────────────────────── svn update(审核前更到最新,PRD §12.3) ─────────────────────────
+
+SVN_UPDATE_TIMEOUT = 60.0  # 秒
+
+# svn update 返回码:0=成功;svn 常用非零但 update 可能部分成功。
+# 我们只关心 E155007(非工作副本)静默跳过 + 其他错误软降级。
+
+
+async def svn_update(path: str) -> dict[str, Any]:
+    """单文件 svn update(审核前把被核表更到最新,PRD §12.3)。
+
+    返回 {updated: bool, message: str}:
+    - E155007(非工作副本)→ 静默跳过:updated=False, message="非工作副本,跳过 update"。
+      本地手改表不该被 update 覆盖。
+    - 认证/权限/网络等其他失败 → updated=False, message 含原因(软降级,调用方提示但审核照跑)。
+    - 成功 → updated=True, message="已更新到最新"。
+    - svn 不可用 → 抛 FileNotFoundError(调用方降级)。
+
+    单文件 update 对"已版本控制文件"可行;新建未提交(E155010)时调用方可降级父目录 update,
+    本函数只处理单文件。
+    """
+    abspath = os.path.abspath(path)
+    # list-form 参数,禁 shell=True,防注入(PRD 决策 40)
+    args = [_SVN_BIN, "update", "--non-interactive", abspath]
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            *args,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+    except FileNotFoundError:
+        raise FileNotFoundError(
+            f"找不到 svn 可执行文件({_SVN_BIN}),请确认 SVN 已安装且在 PATH"
+        )
+
+    try:
+        stdout_b, stderr_b = await asyncio.wait_for(
+            proc.communicate(), timeout=SVN_UPDATE_TIMEOUT
+        )
+    except asyncio.TimeoutError:
+        proc.kill()
+        await proc.wait()
+        raise TimeoutError(f"svn update 超时({SVN_UPDATE_TIMEOUT:.0f}s):{abspath}")
+
+    if proc.returncode != 0:
+        stderr = _decode_stderr(stderr_b)
+        # E155007 非工作副本 → 静默跳过(PRD 决策 41)
+        if "E155007" in stderr:
+            return {"updated": False, "message": "非工作副本,跳过 update(本地表不受影响)"}
+        # 其他失败(E215004/E175013/E155010/网络等)→ 软降级,不阻断
+        if "E155010" in stderr:
+            # 文件未版本控制(新建未提交)→ 尝试父目录 update 由调用方做,这里提示
+            return {"updated": False, "message": "文件未纳入版本控制(E155010),可尝试更新父目录"}
+        is_auth, hint = _is_auth_or_access_error(stderr)
+        if is_auth:
+            return {"updated": False, "message": hint}
+        msg = " ".join(stderr.split()) or f"svn update 退出码 {proc.returncode}"
+        return {"updated": False, "message": msg}
+
+    # 成功(returncode 0)
+    out = _decode_stderr(stdout_b).strip()
+    return {"updated": True, "message": "已更新到最新"}
+
+
 def clear_blame_cache(path: str | None = None) -> int:
     """清空缓存(或只清某 path)。返回清掉的条目数。"""
     if path is None:

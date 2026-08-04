@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import logging
 import re
+from datetime import date, timedelta
 from typing import Any
 from urllib.parse import urlparse, parse_qs
 
@@ -30,6 +31,9 @@ log = logging.getLogger(__name__)
 
 # MCP 调用超时(秒)。报告可能很大(实测 9322 返 107KB),给宽点。
 _MCP_TIMEOUT = 60.0
+
+# 分支识别时间范围(PRD §12.1):今天-7天 ~ 今天。
+_REPORT_LOOKBACK_DAYS = 7
 
 
 # ───────────────────────── 链接解析 ─────────────────────────
@@ -122,7 +126,7 @@ def _flatten_exception(e: BaseException) -> str:
 
 
 async def fetch_report(report_url: str, rule_name_filter: str | None = None) -> dict[str, Any]:
-    """第一层:取报告全量规则结果 + 每条补规则详情。
+    """第一层:取报告全量规则结果 + 每条补规则详情 + 分支识别。
 
     入参:
 - report_url:平台报告链接(含 ?reportId=N)
@@ -132,6 +136,8 @@ async def fetch_report(report_url: str, rule_name_filter: str | None = None) -> 
 {
   "reportId": int,
   "appkey": str | None,
+  "branch": str | None,       # PRD §12.1:识别出的 SVN 分支(无则 None,回退默认分支)
+  "branchAlia": str | None,   # 分支别名(UI 显示用)
   "rules": [
     {
       ...PRD 2.1 全字段(rule_name/rule_id/module/owner/status/note/result.*...),
@@ -145,6 +151,11 @@ async def fetch_report(report_url: str, rule_name_filter: str | None = None) -> 
     """
     report_id = parse_report_id(report_url)
     appkey = parse_appkey(report_url)
+
+    # 0. 分支识别(PRD §12.1):调 getReports 按 reportId 匹配,失败/不匹配 → None(软降级)
+    branch_info: dict[str, Any] | None = None
+    if appkey:
+        branch_info = await identify_report_branch_safe(appkey, report_id)
 
     # 1. 拿全量规则结果
     raw = await _call_mcp_tool("get_all_check_results_in_report", {"reportId": report_id})
@@ -182,7 +193,13 @@ async def fetch_report(report_url: str, rule_name_filter: str | None = None) -> 
         # 浅拷贝 + 补字段(不污染原始)
         enriched.append({**r, "ruleDesc": rule_desc, "scriptPath": script_path})
 
-    return {"reportId": report_id, "appkey": appkey, "rules": enriched}
+    return {
+        "reportId": report_id,
+        "appkey": appkey,
+        "branch": branch_info["branch"] if branch_info else None,
+        "branchAlia": branch_info["branchAlia"] if branch_info else None,
+        "rules": enriched,
+    }
 
 
 async def get_project_infos() -> list[dict[str, Any]]:
@@ -191,3 +208,59 @@ async def get_project_infos() -> list[dict[str, Any]]:
     if not isinstance(raw, dict) or raw.get("code") != 0:
         raise RuntimeError(f"MCP 取项目列表失败: {raw}")
     return raw.get("data", []) or []
+
+
+# ───────────────────────── 分支识别(PRD §12.1) ─────────────────────────
+
+
+async def get_reports(project_id: str) -> list[dict[str, Any]]:
+    """调 MCP get_reports 取该项目的近期报告列表(用于分支识别)。
+
+    入参 {projectId, start_time, end_time},时间范围 今天-7天 ~ 今天(PRD 决策 32)。
+    返回数组每项含 id/project_id/branch/branch_alia/version/error_count 等。
+    MCP 调用失败 → 抛 RuntimeError(调用方降级,不阻断审核)。
+    """
+    end_d = date.today()
+    start_d = end_d - timedelta(days=_REPORT_LOOKBACK_DAYS)
+    raw = await _call_mcp_tool(
+        "get_reports",
+        {
+            "projectId": project_id,
+            "start_time": start_d.isoformat(),
+            "end_time": end_d.isoformat(),
+        },
+    )
+    if not isinstance(raw, dict) or raw.get("code") != 0:
+        raise RuntimeError(f"MCP get_reports 失败: {raw.get('msg', raw) if isinstance(raw, dict) else raw}")
+    data = raw.get("data", []) or []
+    if not isinstance(data, list):
+        raise RuntimeError(f"MCP get_reports 返回 data 不是数组: {type(data)}")
+    return data
+
+
+def identify_report_branch(reports: list[dict[str, Any]], report_id: int) -> dict[str, Any] | None:
+    """在 get_reports 返回数组里按 id == report_id 匹配,取该报告的分支信息。
+
+    返回 {branch, branch_alia} 或 None(没匹配到 → 调用方回退默认分支)。
+    """
+    for r in reports:
+        if r.get("id") == report_id:
+            return {
+                "branch": str(r.get("branch", "") or ""),
+                "branchAlia": str(r.get("branch_alia", "") or ""),
+            }
+    return None
+
+
+async def identify_report_branch_safe(project_id: str, report_id: int) -> dict[str, Any] | None:
+    """安全的分支识别:调 get_reports 并匹配,任何失败/不匹配返回 None(软降级)。
+
+    PRD §12.1:拉取报告时顺带调 getReports,按 reportId 匹配取 branch。
+    调用失败或匹配不到 → 返回 None,调用方回退 get_appkey_root(appkey, "") 默认分支。
+    """
+    try:
+        reports = await get_reports(project_id)
+        return identify_report_branch(reports, report_id)
+    except RuntimeError as e:
+        log.warning("get_reports 调用失败,分支识别降级: %s", e)
+        return None

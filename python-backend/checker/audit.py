@@ -32,6 +32,7 @@ import asyncio
 import json
 import logging
 import os
+import tempfile
 import time
 from collections.abc import AsyncIterator
 from pathlib import Path
@@ -39,6 +40,8 @@ from typing import Any
 
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
+
+from checker import config as checker_config
 
 log = logging.getLogger(__name__)
 
@@ -118,28 +121,34 @@ def _load_claude_env() -> dict[str, str]:
 # PRD §6 决策 15 + §10 待办:系统提示词后端写死,开发者维护,不暴露用户配。
 # 阶段 2.1:无截图 MCP,提示词只覆盖"理解错误 + 按需读脚本 + 生成口语对话"。
 
-_SYSTEM_PROMPT = """你是配置表检查工具的审核助手。你的任务:理解一条配置表检查错误,必要时读取检查脚本理解规则逻辑,然后生成一段发给游戏数值策划的口语对话。
+_SYSTEM_PROMPT = """你是配置表检查工具的审核助手。你的任务:理解一条配置表检查错误,必要时读取检查脚本理解规则逻辑,然后现场打开配置表截图核对,最后生成一段发给游戏数值策划的口语对话。
 
 你会收到:规则信息(名称/模块/描述/状态)、错误信息(配置表/字段/行号/错误详情 value)、检查脚本相对路径(可选)。
 
-工作方式:
-1. 仔细阅读"错误详情"(value 字段),它含业务字段值(如 BookID=50、BookName=《...》)、问题陈述、可能的原因、tab 取值对照等。这是理解错误的主要输入。
-2. 如果需要理解检查规则的具体实现逻辑(比如 value 描述不够清楚,或你想确认规则在查什么),调用 read_check_script 工具,传入给定的脚本相对路径。脚本不存在会返回提示,不影响后续;不需要时不调,省 IO。
-3. 当前阶段你没有截图/开表类工具,不要尝试操作表格或截图。仅基于文字信息生成对话。
+你有两类工具:
+1. read_check_script:读取检查脚本逻辑(按需,不需要时不调)。
+2. 截图工具套装(7个):open_table(打开配置表)、get_columns(读列名)、search_cell(全表搜索定位行)、freeze_column(冻结列到左)、goto_cell(跳转到行/列)、get_viewport_info(核验视口中是否 ID列+错误行+错误列同时可见)、screenshot(截 AG Grid 为 PNG base64)。
+
+工作流程(PRD §4.7 定位决策):
+1. 定表:调用 open_table(table_path) 打开配置表,拿到 columns/rowCount/idColCandidates。
+2. 定唯一ID列:优先从 value 里反推主键列名(平台用主键定位的行,主键列名大概率在 value 的 "列名=值" 里)。找不到则从 idColCandidates 里找 *ID/*id/编号 启发式;都找不到则不冻结。
+3. 定行:rowID 正整数 → 候选行号;-1/不可解析 → 弃用行号,用 search_cell 按业务值搜。跳到该行后用 get_viewport_info 读实际值与 value 业务字段比对,确认行号正确。
+4. 定列:name 在 columns → 候选列;不在 → 从 value 文本猜;校验该列值是否与 value 自洽。
+5. 冻结+跳转:freeze_column(唯一ID列) → goto_cell(错误行,错误列) → get_viewport_info 核验"ID列+错误行+错误列+备注列(如有)同时可见"→ 不全则再调整 → screenshot。
+6. 降级:实在定位不了 → 只生成对话,screenshot 返回 null。
 
 输出要求:
 - 一段发给策划的口语对话,中文,口语化,简洁。
 - 说清:这是什么问题、涉及哪条数据(哪张表/哪个字段/哪一行/什么业务值)、为什么是错的、建议怎么改。
 - 让策划能直接看懂并知道下一步做什么。用策划听得懂的话,不要罗列原始字段名。
-- 不要用 markdown 标题或列表符号包裹整段,直接写对话本身(可自然换行)。"""
+- 不要用 markdown 标题或列表符号包裹整段,直接写对话本身(可自然换行)。
+- 如果成功截了图,在对话末尾提一句"截图已附,可对照查看"。"""
 
 
 # ───────────────────────── 工具名 → 中文描述(PRD §7 step.desc) ─────────────────────────
-# 截图 MCP 7 工具的阶段 2.2 再补;阶段 2.1 只有 read_check_script。
 
 _TOOL_DESC: dict[str, str] = {
     "mcp__script__read_check_script": "正在读取检查脚本",
-    # 截图 MCP 工具(阶段 2.2 接入后生效):
     "mcp__screenshot__open_table": "正在打开配置表",
     "mcp__screenshot__get_columns": "正在读取列信息",
     "mcp__screenshot__search_cell": "正在全表搜索定位",
@@ -148,6 +157,28 @@ _TOOL_DESC: dict[str, str] = {
     "mcp__screenshot__get_viewport_info": "正在核验信息齐全",
     "mcp__screenshot__screenshot": "正在截图",
 }
+
+
+# ───────────────────────── 截图 MCP 端口发现(PRD §4.4) ─────────────────────────
+
+_SCREENSHOT_MCP_PORT_FILE = os.path.join(tempfile.gettempdir(), "tauri-tool-ai-mcp-port.txt")
+
+
+def _get_screenshot_mcp_url() -> str | None:
+    """读截图 MCP 端口文件,返回 http://127.0.0.1:{port}/mcp。
+
+    Rust/Tauri 壳起 axum HTTP MCP server 时写端口文件,Py sidecar 读端口连。
+    文件不存在(截图 MCP 未启动)/端口读不到 → 返回 None,审核降级为无截图。
+    """
+    try:
+        with open(_SCREENSHOT_MCP_PORT_FILE, "r", encoding="ascii") as f:
+            port_str = f.read().strip()
+        port = int(port_str)
+        if 1024 <= port <= 65535:
+            return f"http://127.0.0.1:{port}/mcp"
+    except (OSError, ValueError):
+        pass
+    return None
 
 
 # ───────────────────────── 会话日志(PRD §6) ─────────────────────────
@@ -192,7 +223,44 @@ def _write_log(log_dir: Path, entries: list[dict[str, Any]], final_text: str) ->
         pass
 
 
-# ───────────────────────── 组装审核 prompt ─────────────────────────
+async def _svn_update_audit_table(req: AuditRequest) -> dict[str, Any] | None:
+    """审核前把被核表 svn update 到最新(PRD §12.3)。
+
+    解析 table_path → 绝对路径(用 appkey→root 映射,与 ScreenshotGrid open_table 同一逻辑)→
+    单文件 update。返回 None = 没有可 update 的表(appkey/根未配/解析不到,跳过);
+    否则返回 svn_update 的结果。任何异常软降级返回 {updated: False, message},不抛(审核照跑)。
+    """
+    table_path = (req.errorObj.table_path or "").strip()
+    if not table_path:
+        return None
+    abs_path: str | None = None
+    try:
+        root = checker_config.get_appkey_root(req.appkey or "")
+        if root:
+            cand = Path(table_path)
+            if cand.is_absolute() and cand.is_file():
+                abs_path = str(cand)
+            else:
+                import glob as _glob
+
+                root_path = Path(root)
+                if root_path.is_dir():
+                    pattern = str(root_path / "**" / cand.name)
+                    matches = _glob.glob(pattern, recursive=True)
+                    if matches:
+                        abs_path = matches[0]
+    except Exception:  # noqa: BLE001 - 解析失败跳过 update
+        abs_path = None
+    if not abs_path:
+        return None
+
+    try:
+        from vcs import svn as svn_mod
+
+        return await svn_mod.svn_update(abs_path)
+    except Exception as e:  # noqa: BLE001 - svn 不可用/超时等软降级
+        log.warning("审核前 svn update 异常 %s: %s", abs_path, e)
+        return {"updated": False, "message": f"svn update 失败:{e}"}
 
 
 def _build_prompt(req: AuditRequest) -> str:
@@ -236,15 +304,14 @@ def _build_prompt(req: AuditRequest) -> str:
 
 # ───────────────────────── 工具结果摘要(step_done.result) ─────────────────────────
 
-
-def _summarize_tool_result(content: Any) -> str:
+def _summarize_tool_result(content: object) -> str:
     """把 ToolResultBlock.content(str | list[dict] | None)摘要成短串给前端 step_done。"""
     if content is None:
         return ""
     if isinstance(content, str):
         return content[:120]
     if isinstance(content, list):
-        texts = []
+        texts: list[str] = []
         for c in content:
             if isinstance(c, dict) and "text" in c:
                 texts.append(str(c["text"]))
@@ -252,6 +319,72 @@ def _summarize_tool_result(content: Any) -> str:
                 texts.append(str(c))
         return (" ".join(texts))[:120]
     return str(content)[:120]
+
+
+def _extract_screenshot_base64(content: object) -> str | None:
+    """从 screenshot 工具的 ToolResultBlock.content 里提取 imageBase64。
+
+    MCP 工具返回 content=[{type:text, text: JSON}],JSON 含 {imageBase64} 或 result 嵌套。
+    大结果(截图 base64 超 SDK 阈值)会被 CLI 持久化到文件,content 变成
+    `<persisted-output>\\nOutput too large (64KB). Full output saved to: <路径>`,
+    此时要从路径读文件再提取。
+    解析失败/格式不对 → None(不抛,降级).
+    """
+    try:
+        text = ""
+        if isinstance(content, str):
+            text = content
+        elif isinstance(content, list):
+            for c in content:
+                if isinstance(c, dict) and c.get("type") == "text":
+                    text = str(c.get("text", ""))
+                    break
+        if not text:
+            return None
+
+        # 大结果被持久化:content 是指向文件的引用,读文件内容再提取
+        if "<persisted-output>" in text:
+            import re as _re
+
+            m = _re.search(r"Full output saved to:\s*([^\n]+)", text)
+            if m:
+                p = m.group(1).strip()
+                try:
+                    with open(p, "r", encoding="utf-8") as f:
+                        text = f.read()
+                except OSError as e:
+                    log.warning("读 persisted screenshot 结果失败 %s: %s", p, e)
+                    return None
+
+        data = json.loads(text)
+        # ScreenshotGrid 返回 {imageBase64: "..."} 或 [{type:text, text:"{imageBase64:...}"}]
+        if isinstance(data, list):
+            for item in data:
+                if isinstance(item, dict) and item.get("type") == "text":
+                    try:
+                        inner = json.loads(str(item.get("text", "")))
+                    except (json.JSONDecodeError, TypeError):
+                        continue
+                    if isinstance(inner, dict):
+                        data = inner
+                        break
+            else:
+                data = {}
+        if not isinstance(data, dict):
+            return None
+        # ScreenshotGrid 返回 {imageBase64: "..."}
+        b64 = data.get("imageBase64")
+        if isinstance(b64, str) and b64:
+            return b64
+        # 也兼容 result 嵌套:{result: {imageBase64: "..."}}
+        inner = data.get("result")
+        if isinstance(inner, dict):
+            b64 = inner.get("imageBase64")
+            if isinstance(b64, str) and b64:
+                return b64
+    except (json.JSONDecodeError, TypeError, AttributeError, OSError):
+        pass
+    return None
 
 
 # ───────────────────────── 真 _run_audit(阶段 2.1) ─────────────────────────
@@ -264,6 +397,16 @@ async def _run_audit(req: AuditRequest) -> AsyncIterator[str]:
     """
     error_obj_id = req.errorObj.desc_hash or "unknown"
     yield sse("start", {"errorObjId": error_obj_id})
+
+    # 0. 审核前 svn update 被核表(PRD §12.3):硬前置,把配置表更到最新再核。
+    #    只更新被核那张表(单文件);不进 Claude 工具集(update 不该由 Claude 决策)。
+    #    作为一条 SSE step 事件推前端("正在更新本地表")。失败软降级不阻断。
+    update_result = await _svn_update_audit_table(req)
+    if update_result is not None:
+        yield sse("step", {"tool": "svn_update", "desc": "正在更新本地表"})
+        if not update_result["updated"]:
+            log.info("审核前 svn update 跳过/失败: %s", update_result["message"])
+        yield sse("step_done", {"tool": "svn_update", "result": update_result["message"]})
 
     # 1. 延迟导入 SDK(主进程启动不依赖它)
     try:
@@ -331,7 +474,24 @@ async def _run_audit(req: AuditRequest) -> AsyncIterator[str]:
 
     script_server = create_sdk_mcp_server(name="script", tools=[_read_check_script])
 
-    # 4. 组装 options
+    # 4. 组装 options(含截图 MCP if 端口可读)
+    screenshot_mcp: dict[str, object] = {}
+    screenshot_url = _get_screenshot_mcp_url()
+    if screenshot_url:
+        # 从 types.py:McpHttpServerConfig 是 TypedDict(type/http/url/headers)
+        from claude_agent_sdk.types import McpHttpServerConfig
+
+        screenshot_mcp = {
+            "screenshot": McpHttpServerConfig(
+                type="http",
+                url=screenshot_url,
+                headers={
+                    "Content-Type": "application/json",
+                },
+            ),
+        }
+        log.info("截图 MCP 已接: %s", screenshot_url)
+
     def _stderr_cb(line: str) -> None:
         """CLI 子进程 stderr → 后端日志(排查 GLM 网关问题用)。
 
@@ -347,13 +507,21 @@ async def _run_audit(req: AuditRequest) -> AsyncIterator[str]:
         model="glm-5.2[1M]",
         system_prompt=_SYSTEM_PROMPT,
         env=env,
-        mcp_servers={"script": script_server},
-        tools=[],  # 禁用所有内置 Claude Code 工具(Bash/Read/Edit/Write/WebFetch…),
-        # 只留 MCP 工具(read_check_script)。bypassPermissions 会自动批准所有工具调用,
-        # 不禁用内置工具 = Claude 幻觉 Bash(rm)/Write 会在用户机上真跑,故必须 tools=[]。
-        allowed_tools=["mcp__script__read_check_script"],
+        mcp_servers={"script": script_server, **screenshot_mcp},
+        tools=[],
+        allowed_tools=[
+            "mcp__script__read_check_script",
+            # 截图 MCP 7 工具(server 名 screenshot):
+            "mcp__screenshot__open_table",
+            "mcp__screenshot__get_columns",
+            "mcp__screenshot__search_cell",
+            "mcp__screenshot__freeze_column",
+            "mcp__screenshot__goto_cell",
+            "mcp__screenshot__get_viewport_info",
+            "mcp__screenshot__screenshot",
+        ],
         permission_mode="bypassPermissions",
-        setting_sources=[],  # SDK 隔离:不加载 CLI filesystem settings(避免用户 hooks/MCP 污染)
+        setting_sources=[],
         strict_mcp_config=True,  # 只用本进程传的 mcp_servers,忽略 cwd 下 .mcp.json 等外部 MCP 配置
         max_turns=30,
         stderr=_stderr_cb,
@@ -362,6 +530,8 @@ async def _run_audit(req: AuditRequest) -> AsyncIterator[str]:
     prompt = _build_prompt(req)
 
     final_text = ""
+    screenshot_base64: str | None = None  # HIGH #3:跟踪 mcp__screenshot__screenshot 的结果
+    screenshot_reason: str | None = None
     pending: dict[str, str] = {}  # tool_use_id → tool name(配对 step/step_done)
     log_entries: list[dict[str, Any]] = []
 
@@ -400,6 +570,13 @@ async def _run_audit(req: AuditRequest) -> AsyncIterator[str]:
                                     "is_error": block.is_error,
                                 }
                             )
+                            # HIGH #3:从 screenshot 工具结果里提取 base64
+                            if tname == "mcp__screenshot__screenshot" and not block.is_error:
+                                sc = _extract_screenshot_base64(block.content)
+                                if sc:
+                                    screenshot_base64 = sc
+                                else:
+                                    screenshot_reason = "截图工具返回了结果但未能提取 base64(格式异常)"
             elif isinstance(msg, ResultMessage):
                 if msg.is_error:
                     errs = "; ".join(msg.errors or []) if msg.errors else ""
@@ -408,7 +585,7 @@ async def _run_audit(req: AuditRequest) -> AsyncIterator[str]:
                     if status:
                         detail = f"{detail} (HTTP {status})"
                     yield sse("error", {"message": detail})
-                    _write_log(log_dir, log_entries, "")
+                    _write_log(log_dir, log_entries, final_text)
                     return
                 final_text = msg.result or ""
             # SystemMessage / StreamEvent / RateLimitEvent → 仅记日志,不发业务事件
@@ -429,14 +606,17 @@ async def _run_audit(req: AuditRequest) -> AsyncIterator[str]:
             pass
         return
 
-    # 6. 写会话日志 + 发 result(阶段 2.1 无截图)
+    # 6. 写会话日志 + 发 result(阶段 2.2:含截图,feat 截图 MCP)
     _write_log(log_dir, log_entries, final_text)
+    reason = screenshot_reason
+    if screenshot_base64 is None and screenshot_url is None:
+        reason = reason or "当前环境无截图 MCP(tauri-tool-ai-mcp-port.txt 不存在,降级为纯对话)"
     yield sse(
         "result",
         {
             "conclusion": final_text or "(审核完成,Claude 未输出对话)",
-            "screenshot": None,
-            "screenshotReason": "阶段 2.1 暂未接入截图 MCP,仅生成对话",
+            "screenshot": screenshot_base64,
+            "screenshotReason": reason,
         },
     )
 

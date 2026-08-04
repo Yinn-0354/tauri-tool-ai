@@ -15,6 +15,7 @@ import OpenConfigModal, { type TableOpenConfig } from "./components/OpenConfigMo
 import { useNavStore } from "./store/navStore";
 import CheckerView from "./components/CheckerView";
 import CheckerSettingsModal from "./components/CheckerSettingsModal";
+import ScreenshotGrid from "./grid/ScreenshotGrid";
 
 /**
  * Carbon Terminal 主题根布局。
@@ -260,7 +261,27 @@ export default function App() {
           >
             {active === "checker" ? (
               backendUrl ? (
-                <CheckerView backendUrl={backendUrl} />
+                <div style={{ flex: 1, minHeight: 0, position: "relative", overflow: "hidden" }}>
+                  {/* 隐藏存活 AG Grid 实例(PRD §4.2):z-index=0 在下方,
+                      CheckerView 不透明背景 z-index=1 盖住,用户看不见但 html2canvas 能截。
+                      排除 display:none(截空白)。ScreenshotGrid 监听 Tauri event 驱动。 */}
+                  <ScreenshotGrid backendUrl={backendUrl} />
+                  {/* 包裹层必须也是 flex 列容器(display:flex + minHeight:0),
+                      否则 CheckerView 根 div 的 flex:1 失效,结果区 overflow:auto 失去滚动约束(回归:不可滚动)。 */}
+                  <div
+                    style={{
+                      position: "relative",
+                      zIndex: 1,
+                      height: "100%",
+                      display: "flex",
+                      flexDirection: "column",
+                      minHeight: 0,
+                      overflow: "hidden",
+                    }}
+                  >
+                    <CheckerView backendUrl={backendUrl} />
+                  </div>
+                </div>
               ) : (
                 <div
                   style={{
