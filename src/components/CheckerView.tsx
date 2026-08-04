@@ -103,6 +103,9 @@ export default function CheckerView({ backendUrl }: CheckerViewProps) {
   const loading = activeTab?.loading ?? false;
   const error = activeTab?.error ?? null;
   const branchAlia = activeTab?.branchAlia ?? null;
+  // 分支显示:优先别名(平台配了显示别名如"正式分支"),为空回退完整分支路径
+  // (如 branches-rel/b_MechaWar_release——机甲等项目的 branch_alia 常为空)。
+  const branchDisplay = (branchAlia || activeTab?.branch) ?? null;
 
   // 列表展示不通过 + 异常规则。
   const failRules = rules.filter((r) => r.status !== "success");
@@ -324,9 +327,11 @@ export default function CheckerView({ backendUrl }: CheckerViewProps) {
                     }}
                   >
                     {isError ? "无 reportId" : `#${id}`}
-                    {/* 分支别名(PRD §12.1) */}
-                    {t.branchAlia && (
-                      <span style={{ opacity: 0.7, marginLeft: 2 }}>({t.branchAlia})</span>
+                    {/* 分支别名(PRD §12.1):优先别名,为空回退分支路径 */}
+                    {(t.branchAlia || t.branch) && (
+                      <span style={{ opacity: 0.7, marginLeft: 2 }}>
+                        ({t.branchAlia || t.branch})
+                      </span>
                     )}
                     <CloseOutlined
                       onClick={(e) => {
@@ -426,7 +431,7 @@ export default function CheckerView({ backendUrl }: CheckerViewProps) {
                 报告 <span style={{ color: "var(--accent)" }}>#{reportId}</span>
               </span>
               {appkey && <span>项目 {appkey}</span>}
-              {branchAlia && <span>分支 {branchAlia}</span>}
+              {branchDisplay && <span>分支 {branchDisplay}</span>}
               <span>共 {rules.length} 条规则</span>
               <span style={{ color: "var(--danger)" }}>不通过 {failCount}</span>
               <span style={{ color: "var(--warn)" }}>异常 {exceptionCount}</span>
