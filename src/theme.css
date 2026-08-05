@@ -167,6 +167,23 @@ body {
   font-weight: 600 !important;
 }
 
+/* 点单元格高亮整行:整行浅底(含 __blame/__rowNo,统一上底)。
+ * 与 tt-hit 的边框可叠加(行列交叉单元格见下方)。 */
+.ag-theme-quartz.tt-grid .tt-row-highlight {
+  background: var(--accent-soft) !important;
+}
+
+/* 点单元格高亮整列:整列浅底(仅数据列,__blame/__rowNo 列 cellClassRules 已排除,不会误染)。 */
+.ag-theme-quartz.tt-grid .tt-col-highlight {
+  background: var(--accent-soft) !important;
+}
+
+/* 行列交叉单元格(被点击的单元格):叠加更突出的 accent 实色内嵌边框,定位焦点。
+ * 特异性同 tt-row-highlight+tt-col-highlight(0,2,0),靠源码顺序在两类之后压过叠加底色。 */
+.ag-theme-quartz.tt-grid .tt-row-highlight.tt-col-highlight {
+  box-shadow: inset 0 0 0 2px var(--accent) !important;
+}
+
 /* 命中且当前跳转焦点:再加一层 accent 实色文字底,仅靠 color 在白/暗底都够亮,
  * 避免与 accent-soft 底色混淆。用更高特异性压过冻结列规则。 */
 .ag-theme-quartz.tt-grid.tt-has-frozen-cols .ag-pinned-left-cols-container .tt-hit {

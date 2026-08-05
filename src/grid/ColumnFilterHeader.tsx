@@ -72,66 +72,109 @@ export default function ColumnFilterHeader(params: ColumnFilterHeaderParams) {
   // 切换列(tableId/colName 变)也要重拉。
   const fetchKey = `${tableId}|${colName}|${headerRow ?? ""}|${JSON.stringify(skipRows)}|${otherKey}`;
 
-  const fetchValues = useCallback(async () => {
-    setLoading(true);
-    setError(null);
-    const base = backendUrl.replace(/\/$/, "");
-    try {
-      const resp = await fetch(`${base}/api/table/column-values`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          tableId,
-          column: colName,
-          headerRow: headerRow ?? null,
-          skipRows,
-          filters: otherFilters, // 排除本列,使计数=按其他列筛选后的值计数
-        }),
-      });
-      if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
-      const data = (await resp.json()) as { values: ColValue[]; truncated: boolean };
-      setAllValues(data.values);
-      setTruncated(data.truncated);
-    } catch (e) {
-      setError(String(e instanceof Error ? e.message : e));
-      setAllValues([]);
-    } finally {
-      setLoading(false);
-    }
-  }, [backendUrl, tableId, colName, headerRow, skipRows, otherFilters]);
+  // 列值缓存:key=fetchKey|search(空 search 用 ""),val={values, truncated}。
+  // fetchKey 变化(列切换/其他列筛选变)时清空整个缓存,防拿到旧 fetchKey 的结果。
+  const valueCache = useRef<Map<string, { values: ColValue[]; truncated: boolean }>>(new Map());
+  const lastFetchKeyRef = useRef<string>("");
+  // 清空缓存并记录当前 fetchKey(供 debounce 判定是否跨 fetchKey)
+  const resetCacheFor = useCallback((key: string) => {
+    valueCache.current.clear();
+    lastFetchKeyRef.current = key;
+  }, []);
+
+  const fetchValues = useCallback(
+    async (searchArg: string) => {
+      const cacheKey = `${fetchKey}|${searchArg}`;
+      const cached = valueCache.current.get(cacheKey);
+      if (cached) {
+        setAllValues(cached.values);
+        setTruncated(cached.truncated);
+        setLoading(false);
+        return;
+      }
+      setLoading(true);
+      setError(null);
+      const base = backendUrl.replace(/\/$/, "");
+      try {
+        const resp = await fetch(`${base}/api/table/column-values`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            tableId,
+            column: colName,
+            headerRow: headerRow ?? null,
+            skipRows,
+            filters: otherFilters, // 排除本列,使计数=按其他列筛选后的值计数
+            search: searchArg || null,
+          }),
+        });
+        if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+        const data = (await resp.json()) as { values: ColValue[]; truncated: boolean };
+        valueCache.current.set(cacheKey, { values: data.values, truncated: data.truncated });
+        // 若期间 fetchKey 变了(用户切列/其他筛选改),丢弃本次结果
+        if (lastFetchKeyRef.current !== fetchKey) return;
+        setAllValues(data.values);
+        setTruncated(data.truncated);
+      } catch (e) {
+        if (lastFetchKeyRef.current !== fetchKey) return;
+        setError(String(e instanceof Error ? e.message : e));
+        setAllValues([]);
+      } finally {
+        if (lastFetchKeyRef.current === fetchKey) setLoading(false);
+      }
+    },
+    [backendUrl, tableId, colName, headerRow, skipRows, otherFilters, fetchKey]
+  );
 
   // 打开下拉时拉取(按 fetchKey 缓存:同 key 不重复拉)。
-  const lastFetchedKey = useRef<string>("");
   const handleOpenChange = (next: boolean) => {
     setOpen(next);
     if (next) {
       // 重新用最新 selected 初始化临时勾选(每次打开同步当前筛选状态)
       setChecked(new Set(selected));
       setSearch("");
-      if (lastFetchedKey.current !== fetchKey) {
-        lastFetchedKey.current = fetchKey;
-        void fetchValues();
+      if (lastFetchKeyRef.current !== fetchKey) {
+        resetCacheFor(fetchKey);
+        void fetchValues("");
+      } else {
+        // 同 fetchKey:复用空 search 的缓存(若存在)
+        const cached = valueCache.current.get(`${fetchKey}|`);
+        if (cached) {
+          setAllValues(cached.values);
+          setTruncated(cached.truncated);
+        } else {
+          void fetchValues("");
+        }
       }
       // 打开时聚焦搜索框。setTimeout 0 等 antd portal 挂载完成、ref 回调写入实例后再 focus。
       setTimeout(() => searchInputRef.current?.focus(), 0);
     }
   };
 
-  // fetchKey 变化(其他列筛选/列切换)时,若面板开着则重拉;面板关着则下次打开拉。
+  // fetchKey 变化(其他列筛选/列切换)时,若面板开着则清缓存重拉当前 search;面板关着则下次打开拉。
   useEffect(() => {
-    if (open && lastFetchedKey.current !== fetchKey) {
-      lastFetchedKey.current = fetchKey;
-      void fetchValues();
+    if (lastFetchKeyRef.current !== fetchKey) {
+      resetCacheFor(fetchKey);
+      if (open) {
+        void fetchValues(search);
+      }
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [fetchKey]);
 
-  // 搜索过滤后的选项
-  const filtered = useMemo(() => {
-    if (!search.trim()) return allValues;
-    const q = search.toLowerCase();
-    return allValues.filter((v) => v.value.toLowerCase().includes(q));
-  }, [allValues, search]);
+  // 搜索框 debounce(300ms):重新 POST 带 search 的 column-values。
+  // 后端已按 search 过滤并截断,前端不再二次 filter(否则丢失后端 count 降序)。
+  useEffect(() => {
+    if (!open) return; // 面板关着不响应
+    const t = setTimeout(() => {
+      void fetchValues(search);
+    }, 300);
+    return () => clearTimeout(t);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [search, open]);
+
+  // filtered 直接用 allValues(后端已按 search 过滤);保留名称兼容下方 toggleAll 等。
+  const filtered = allValues;
 
   const allChecked =
     filtered.length > 0 && filtered.every((v) => checked.has(v.value));

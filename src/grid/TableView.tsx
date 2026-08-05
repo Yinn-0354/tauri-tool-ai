@@ -13,6 +13,7 @@ import type {
   ICellRendererParams,
   CellClassParams,
   CellContextMenuEvent,
+  CellFocusedEvent,
 } from "@ag-grid-community/core";
 import { buildDatasource } from "./datasource";
 import { fetchBlame, authorColor, type BlameLineInfo } from "./blame";
@@ -111,6 +112,10 @@ const TableView = forwardRef<TableViewHandle, TableViewProps>(function TableView
     () => new Map((initialTab?.hits ?? []).map(([r, cols]) => [r, new Set(cols)]))
   );
 
+  // 点单元格高亮整行整列:记录焦点单元格的真实有效行号 + 列 field。瞬态,不 dump(切 tab 丢弃)。
+  const [focusedRow, setFocusedRow] = useState<number | null>(null);
+  const [focusedCol, setFocusedCol] = useState<string | null>(null);
+
   // store:blame 状态(由 Toolbar 触发,此处执行 + 写回)
   const setBlame = useTableStore((s) => s.setBlame);
   const setBlameLoading = useTableStore((s) => s.setBlameLoading);
@@ -144,8 +149,21 @@ const TableView = forwardRef<TableViewHandle, TableViewProps>(function TableView
         if (colIdx < 0) return false;
         return colSet.has(colIdx);
       },
+      // 点单元格高亮整行:该行 __rowIndex 匹配焦点行(含 __blame/__rowNo 列,整行统一上底)
+      "tt-row-highlight": (params: CellClassParams) => {
+        if (focusedRow === null) return false;
+        const rowIdx = (params.data as { __rowIndex?: number } | undefined)?.__rowIndex;
+        return rowIdx !== undefined && rowIdx !== null && rowIdx === focusedRow;
+      },
+      // 点单元格高亮整列:该列 field 匹配焦点列(数据列才参与,排除 __blame/__rowNo 避免误染整列底色)
+      "tt-col-highlight": (params: CellClassParams) => {
+        if (focusedCol === null) return false;
+        const colField = params.colDef?.field;
+        if (!colField || colField === "__blame" || colField === "__rowNo") return false;
+        return colField === focusedCol;
+      },
     }),
-    [hits, columns]
+    [hits, columns, focusedRow, focusedCol]
   );
 
   const columnDefs = useMemo<ColDef[]>(() => {
@@ -217,6 +235,7 @@ const TableView = forwardRef<TableViewHandle, TableViewProps>(function TableView
       suppressMovable: true,
       filter: false,
       cellClass: "tt-rowno-cell",
+      cellClassRules, // 挂上 tt-row-highlight(整行高亮需覆盖 # 列;tt-col-highlight 内已排除 __rowNo 不参与列高亮)
       cellRenderer: rowNoCellRenderer,
     };
 
@@ -231,6 +250,7 @@ const TableView = forwardRef<TableViewHandle, TableViewProps>(function TableView
         suppressMovable: true,
         cellRenderer: blameCellRenderer,
         cellClass: "tt-blame-cell",
+        cellClassRules, // 挂上 tt-row-highlight(整行高亮需覆盖 Blame 列;tt-col-highlight 内已排除 __blame 不参与列高亮)
       };
       return [blameCol, rowNoCol, ...dataCols];
     }
@@ -429,6 +449,25 @@ const TableView = forwardRef<TableViewHandle, TableViewProps>(function TableView
     setPinnedTopRows(rows);
     return true;
   }, [backendUrl, tableId, headerRow, skipRows, columns, sortCol, sortAsc]);
+
+  // 点单元格 → 高亮整行整列。用 __rowIndex(0-based 真实行号,datasource 写入,与 ag-grid rowIndex
+  // 解耦,冻结行偏移不影响)而非 event.rowIndex(视图行号,冻结后偏移);列用 colDef.field(列名)。
+  // focusedCell 瞬态,不 dump(切 tab 卸载即丢弃)。
+  // ag-grid v32 CellFocusedEvent 无 data/node 字段(只有 rowIndex/column/rowPinned),
+  // column 类型为 Column | string | null —— string 直接当 colId,Column 走 getColId。
+  const onCellFocused = useCallback((params: CellFocusedEvent) => {
+    const row = params.rowIndex != null
+      ? params.api.getDisplayedRowAtIndex(params.rowIndex)?.data
+      : undefined;
+    const rowIdx = (row as { __rowIndex?: number } | undefined)?.__rowIndex;
+    const col =
+      typeof params.column === "string"
+        ? params.column
+        : params.column?.getColId() ?? null;
+    setFocusedRow(rowIdx ?? null);
+    setFocusedCol(col);
+    gridRef.current?.api?.refreshCells({ force: true });
+  }, []);
 
   // 右键单元格:阻止浏览器原生菜单,记录坐标+单元格信息,渲染自绘菜单(社区版无内置右键菜单)。
   const onCellContextMenu = useCallback((params: CellContextMenuEvent) => {
@@ -724,6 +763,7 @@ const TableView = forwardRef<TableViewHandle, TableViewProps>(function TableView
           context={{ blameByLine, openCommitDetail }}
           onSortChanged={onSortChanged}
           onFirstDataRendered={onFirstDataRendered}
+          onCellFocused={onCellFocused}
           onCellContextMenu={onCellContextMenu}
           pinnedTopRowData={pinnedTopRows}
         />

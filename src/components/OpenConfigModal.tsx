@@ -1,12 +1,28 @@
 import { useEffect, useState } from "react";
-import { Modal, InputNumber, Button } from "antd";
+import { Modal, InputNumber, Button, Select } from "antd";
 import { PlusOutlined, DeleteOutlined } from "@ant-design/icons";
 
-/** 表头/跳过配置。headerRow:1-based,null=自动(首行当表头)。skipRows:[[a,b],...] 1-based 闭区间。 */
+/** 表头/跳过/编码配置。headerRow:1-based,null=自动(首行当表头)。skipRows:[[a,b],...] 1-based 闭区间。
+ * encoding:文件编码(仅 .tab/.txt/.tsv 生效);null=自动探测。 */
 export interface TableOpenConfig {
   headerRow: number | null;
   skipRows: number[][];
+  encoding: string | null;
 }
+
+/** 编码下拉选项。value=null 为「自动」(走后端 chardet 探测),其余为强制指定编码。 */
+const ENCODING_OPTIONS: { label: string; value: string | null }[] = [
+  { label: "自动(探测)", value: null },
+  { label: "UTF-8", value: "utf-8" },
+  { label: "GBK", value: "gbk" },
+  { label: "GB18030", value: "gb18030" },
+  { label: "Big5", value: "big5" },
+  { label: "UTF-16 LE", value: "utf-16le" },
+  { label: "UTF-16 BE", value: "utf-16be" },
+  { label: "Shift_JIS", value: "shift_jis" },
+  { label: "EUC-KR", value: "euc-kr" },
+  { label: "Latin-1", value: "iso-8859-1" },
+];
 
 interface OpenConfigModalProps {
   open: boolean;
@@ -64,12 +80,14 @@ export default function OpenConfigModal({
 }: OpenConfigModalProps) {
   const [headerRow, setHeaderRow] = useState<number | null>(null);
   const [segs, setSegs] = useState<SkipSeg[]>([{ start: null, end: null }]);
+  const [encoding, setEncoding] = useState<string | null>(null);
 
   // 弹窗打开/initial 变化时同步本地编辑态。
   useEffect(() => {
     if (open) {
       setHeaderRow(initial?.headerRow ?? null);
       setSegs(toSegs(initial?.skipRows ?? []));
+      setEncoding(initial?.encoding ?? null);
     }
   }, [open, initial]);
 
@@ -92,7 +110,7 @@ export default function OpenConfigModal({
   };
 
   const submit = () => {
-    onSubmit({ headerRow, skipRows: fromSegs(segs) });
+    onSubmit({ headerRow, skipRows: fromSegs(segs), encoding });
   };
 
   return (
@@ -266,6 +284,38 @@ export default function OpenConfigModal({
             }}
           >
             被跳过的行不显示也不参与查找;无效段(任一为空或 起&gt;止)会被忽略。
+          </div>
+        </div>
+
+        {/* 文件编码 */}
+        <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+          <label
+            style={{
+              color: "var(--text-muted)",
+              fontSize: 12,
+              letterSpacing: ".04em",
+            }}
+          >
+            文件编码(仅 .tab/.txt/.tsv;乱码时改此项重开)
+          </label>
+          <Select<string | null>
+            value={encoding}
+            options={ENCODING_OPTIONS}
+            onChange={(v) => setEncoding(v ?? null)}
+            style={{
+              width: "100%",
+              fontFamily: "var(--font-mono)",
+            }}
+            popupClassName="tt-modal-select-dropdown"
+          />
+          <div
+            style={{
+              color: "var(--text-dim)",
+              fontFamily: "var(--font-mono)",
+              fontSize: 11,
+            }}
+          >
+            「自动」用 chardet 探测,不可靠时手动指定(如 GBK)。改编码会重新解析(不共享旧缓存)。
           </div>
         </div>
       </div>

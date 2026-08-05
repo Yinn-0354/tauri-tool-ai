@@ -1,9 +1,10 @@
 """配置表检查工具 · 表头行/跳过行配置持久化
 
 文件:%LOCALAPPDATA%/tauri-tool-ai/table-config.json(Tauri 侧同目录共享)
-结构:JSON object,key = 文件绝对路径(abspath),value = { "headerRow": int|null, "skipRows": [[a,b],...] }
+结构:JSON object,key = 文件绝对路径(abspath),value = { "headerRow": int|null, "skipRows": [[a,b],...], "encoding": str|null }
   - headerRow: 1-based,表示「第 N 行是表头」(该行的列名作为 schema);null=自动推断(首行当表头)
   - skipRows: 段列表,每段 [startRow, endRow] 1-based 闭区间,这些行不显示在表格中(也不算入数据行)
+  - encoding: 文件编码(仅对 .tab/.txt/.tsv 生效);null=自动探测(向后兼容:旧记录无此字段视为 null)
 
 内存加载 + 落盘,dict 结构。原子替换,utf-8。
 """
@@ -61,11 +62,12 @@ def _save_all(cfg: dict[str, dict[str, Any]]) -> None:
 # ───────────────────────── 对外 API ─────────────────────────
 
 def _normalize(value: dict[str, Any] | None) -> dict[str, Any]:
-    """规范化单条记录,确保字段齐全且类型正确。"""
+    """规范化单条记录,确保字段齐全且类型正确。encoding 缺失视为 None(向后兼容旧记录)。"""
     if not isinstance(value, dict):
-        return {"headerRow": None, "skipRows": []}
+        return {"headerRow": None, "skipRows": [], "encoding": None}
     header_row = value.get("headerRow")
     skip_rows = value.get("skipRows")
+    encoding = value.get("encoding")
     # headerRow: int 或 None
     if header_row is not None and not isinstance(header_row, int):
         header_row = None
@@ -78,19 +80,27 @@ def _normalize(value: dict[str, Any] | None) -> dict[str, Any]:
     for seg in skip_rows:
         if isinstance(seg, list) and len(seg) == 2 and all(isinstance(x, int) and not isinstance(x, bool) for x in seg):
             norm_skip.append([seg[0], seg[1]])
-    return {"headerRow": header_row, "skipRows": norm_skip}
+    # encoding: str 或 None(非 str 强制 None)
+    if not isinstance(encoding, str):
+        encoding = None
+    return {"headerRow": header_row, "skipRows": norm_skip, "encoding": encoding}
 
 
 def load_config(path: str) -> dict[str, Any]:
-    """返回该 path 的 {headerRow, skipRows}(无记录返回 {headerRow: null, skipRows: []})。"""
+    """返回该 path 的 {headerRow, skipRows, encoding}(无记录返回 {headerRow: null, skipRows: [], encoding: null})。"""
     abs_path = os.path.abspath(path)
     cfg = _load_all()
     return _normalize(cfg.get(abs_path))
 
 
-def save_config(path: str, header_row: int | None, skip_rows: list[list[int]]) -> None:
+def save_config(
+    path: str,
+    header_row: int | None,
+    skip_rows: list[list[int]],
+    encoding: str | None = None,
+) -> None:
     """写入/更新 table-config.json 中该 path 的配置(原子替换,utf-8)。"""
     abs_path = os.path.abspath(path)
     cfg = _load_all()
-    cfg[abs_path] = _normalize({"headerRow": header_row, "skipRows": skip_rows})
+    cfg[abs_path] = _normalize({"headerRow": header_row, "skipRows": skip_rows, "encoding": encoding})
     _save_all(cfg)

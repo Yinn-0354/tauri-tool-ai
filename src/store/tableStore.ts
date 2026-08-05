@@ -37,6 +37,8 @@ export interface TabState {
   columns: TableColumnMeta[];
   headerRow: number | null;
   skipRows: number[][];
+  /** 文件编码(.tab/.txt/.tsv);null=自动探测。进 tableId,换编码需重新 open。 */
+  encoding: string | null;
   /** 文件可能已变(重启后未校验),需重新打开拿新 tableId。重启恢复的 tab 初值 true。 */
   stale: boolean;
 
@@ -71,6 +73,7 @@ function makeTabState(partial: Pick<TabState, "id" | "filePath"> & Partial<TabSt
     columns: [],
     headerRow: null,
     skipRows: [],
+    encoding: null,
     stale: false,
     status: "",
     error: null,
@@ -100,6 +103,7 @@ interface PersistedTab {
   filePath: string;
   headerRow: number | null;
   skipRows: number[][];
+  encoding: string | null;
   filters: Record<string, string[]>;
   filterEnabled: boolean;
   sortCol: string | null;
@@ -126,6 +130,7 @@ interface TableStore {
     columns: TableColumnMeta[];
     headerRow: number | null;
     skipRows: number[][];
+    encoding: string | null;
   }) => string;
   closeTab: (id: string) => void;
   switchTab: (id: string) => void;
@@ -176,6 +181,7 @@ function persistToStorage(tabOrder: string[], tabs: Record<string, TabState>) {
         filePath: t.filePath,
         headerRow: t.headerRow,
         skipRows: t.skipRows,
+        encoding: t.encoding,
         filters: t.filters,
         filterEnabled: t.filterEnabled,
         sortCol: t.sortCol,
@@ -200,6 +206,7 @@ function readFromStorage(): { tabOrder: string[]; tabs: TabState[] } | null {
         filePath: p.filePath,
         headerRow: p.headerRow,
         skipRows: p.skipRows,
+        encoding: p.encoding ?? null,
         filters: p.filters || {},
         filterEnabled: p.filterEnabled ?? true,
         sortCol: p.sortCol ?? null,
@@ -244,6 +251,7 @@ export const useTableStore = create<TableStore>((set, get) => {
               columns: info.columns,
               headerRow: info.headerRow,
               skipRows: info.skipRows,
+              encoding: info.encoding,
               stale: false,
               error: null,
             },
@@ -265,6 +273,7 @@ export const useTableStore = create<TableStore>((set, get) => {
         columns: info.columns,
         headerRow: info.headerRow,
         skipRows: info.skipRows,
+        encoding: info.encoding,
         stale: false,
       });
       set((s) => ({

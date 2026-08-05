@@ -27,7 +27,7 @@ import ScreenshotGrid from "./grid/ScreenshotGrid";
  * 多标签:同时可打开多个表格,各 tab 独立保存状态(切 tab dump 到 store,切回复原)。
  * 只挂载活动 tab 的 TableView(key=tabId remount),非活动 tab 卸载,内存只占 1 份 ag-Grid。
  * 打开文件流程:openDialog → GET /api/table/config 预填 → OpenConfigModal →
- * POST /api/table/open(带 headerRow/skipRows)+ POST /api/table/config(记忆)→ openTab(新 tab 或激活已有)。
+ * POST /api/table/open(带 headerRow/skipRows/encoding)+ POST /api/table/config(记忆)→ openTab(新 tab 或激活已有)。
  */
 export default function App() {
   const backendUrl = useTableStore((s) => s.backendUrl);
@@ -82,6 +82,7 @@ export default function App() {
             path,
             headerRow: cfg.headerRow,
             skipRows: cfg.skipRows,
+            encoding: cfg.encoding,
           }),
         });
         if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
@@ -97,6 +98,7 @@ export default function App() {
           columns: data.columns,
           headerRow: cfg.headerRow,
           skipRows: cfg.skipRows,
+          encoding: cfg.encoding,
         });
         setStatus(
           `已打开 ${path} · ${data.rowCount.toLocaleString()} 行 · ${data.columns.length} 列`,
@@ -110,6 +112,7 @@ export default function App() {
               path,
               headerRow: cfg.headerRow,
               skipRows: cfg.skipRows,
+              encoding: cfg.encoding,
             }),
           });
         } catch {
@@ -133,6 +136,7 @@ export default function App() {
       void doOpen(activeTab.filePath, {
         headerRow: activeTab.headerRow,
         skipRows: activeTab.skipRows,
+        encoding: activeTab.encoding,
       });
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -164,11 +168,16 @@ export default function App() {
           const cfg = (await resp.json()) as {
             headerRow: number | null;
             skipRows: number[][];
+            encoding: string | null;
           };
-          initial = { headerRow: cfg.headerRow, skipRows: cfg.skipRows };
+          initial = {
+            headerRow: cfg.headerRow,
+            skipRows: cfg.skipRows,
+            encoding: cfg.encoding,
+          };
         }
       } catch {
-        // 忽略,用默认 null/[]。
+        // 忽略,用默认 null/[]/null。
       }
       setConfigPath(path);
       setConfigInitial(initial);
@@ -191,6 +200,7 @@ export default function App() {
     const cfg: TableOpenConfig = {
       headerRow: configInitial?.headerRow ?? null,
       skipRows: configInitial?.skipRows ?? [],
+      encoding: configInitial?.encoding ?? null,
     };
     void doOpen(configPath, cfg);
   }, [doOpen, configPath, configInitial]);

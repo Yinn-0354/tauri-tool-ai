@@ -39,11 +39,16 @@ _XLSX_EXT = {".xlsx", ".xls"}
 
 # ───────────────────────── tableId / 元数据 ─────────────────────────
 
-def _file_signature(path: str) -> tuple[float, int, str]:
-    """返回 (mtime, size, tableId)。tableId = sha1(path|mtime|size)。"""
+def _file_signature(path: str, encoding: str | None = None) -> tuple[float, int, str]:
+    """返回 (mtime, size, tableId)。tableId = sha1(path|mtime|size|encoding)。
+
+    encoding 入 key:同一文件用不同编码打开会产生不同 parquet 缓存,避免「按首次编码共享缓存、
+    换编码不生效」。encoding=None(自动探测)用占位符 "" 保证确定性。
+    """
     st = os.stat(path)
     mtime, size = st.st_mtime, st.st_size
-    raw = f"{path}|{mtime}|{size}".encode("utf-8", errors="surrogatepass")
+    enc_key = encoding if encoding is not None else ""
+    raw = f"{path}|{mtime}|{size}|{enc_key}".encode("utf-8", errors="surrogatepass")
     table_id = hashlib.sha1(raw).hexdigest()
     return mtime, size, table_id
 
@@ -122,14 +127,61 @@ def _has_excess_replacement(df: pl.DataFrame, sample_rows: int = 200) -> bool:
     return (repl_chars / total_chars) > 0.05
 
 
-def _read_tab(path: str) -> pl.DataFrame:
+def _read_tab(path: str, encoding: str | None = None) -> pl.DataFrame:
     """读 \t 分隔文本(has_header=False,parquet 保存全量原始行)。
 
-    先 utf8-lossy 首读,若替换字符过多则探测编码二次读;保留 utf8-lossy 兜底。
+    encoding:
+    - None(自动):utf8-lossy 首读,若替换字符过多则 chardet/charset_normalizer 探测编码二次读;
+      保留 utf8-lossy 兜底。
+    - 指定编码(如 "gbk"):强制用该编码读。先尝试 polars.read_csv(encoding=enc);若抛错或仍产生
+      过多 U+FFFD(polars encoding 参数对部分编码如 utf-16le 支持有限)则回退到 Python 预解码
+      (bytes → text.decode(enc) → 重编码 utf-8 → BytesIO → polars.read_csv(encoding="utf-8")),
+      兜底为 polars 直接读的结果。
+
     has_header=False 让 parquet 行 = 原文件行(1-based 行号 = parquet 0-based+1),
     便于 headerRow/skipRows 按原文件行号语义统一处理。
     """
-    # 1) utf8-lossy 首读(把无法解码的字节替换为 U+FFFD,不抛错)
+    if encoding is not None:
+        # 强制指定编码:先试 polars 原生 encoding 参数
+        try:
+            df = pl.read_csv(
+                path, separator="\t", encoding=encoding, infer_schema_length=1000,
+                has_header=False, quote_char=None,
+            )
+            if not _has_excess_replacement(df):
+                return df
+        except Exception:
+            pass
+        # 回退:Python 预解码 → utf-8 BytesIO(处理 polars encoding 参数支持不全的编码,如 utf-16le/be)
+        try:
+            with open(path, "rb") as f:
+                raw = f.read()
+            text = raw.decode(encoding, errors="replace")
+            import io
+
+            buf = io.BytesIO(text.encode("utf-8", errors="replace"))
+            df2 = pl.read_csv(
+                buf, separator="\t", encoding="utf-8", infer_schema_length=1000,
+                has_header=False, quote_char=None,
+            )
+            if not _has_excess_replacement(df2):
+                return df2
+        except Exception:
+            pass
+        # 兜底:返回 polars 原生 encoding 的结果(可能含替换字符,但至少不抛错)
+        try:
+            return pl.read_csv(
+                path, separator="\t", encoding=encoding, infer_schema_length=1000,
+                has_header=False, quote_char=None,
+            )
+        except Exception:
+            # 最终兜底:utf8-lossy(与自动模式兜底一致)
+            return pl.read_csv(
+                path, separator="\t", encoding="utf8-lossy", infer_schema_length=1000,
+                has_header=False, quote_char=None,
+            )
+
+    # 自动模式:utf8-lossy 首读(把无法解码的字节替换为 U+FFFD,不抛错)
     # quote_char=None:禁用 CSV 引号转义。.tab 是 TSV,字段内含双引号(如 "弗雷"是...)时,
     # 默认 quote_char='"' 会把双引号当转义起始,报 "not properly escaped"。禁用后引号作普通字符保留。
     df = pl.read_csv(
@@ -138,7 +190,7 @@ def _read_tab(path: str) -> pl.DataFrame:
     )
     if not _has_excess_replacement(df):
         return df
-    # 2) 探测编码二次读
+    # 探测编码二次读
     enc = _detect_encoding(path)
     if enc:
         try:
@@ -150,7 +202,7 @@ def _read_tab(path: str) -> pl.DataFrame:
                 return df2
         except Exception:
             pass
-    # 3) 兜底:保留 utf8-lossy 结果
+    # 兜底:保留 utf8-lossy 结果
     return df
 
 
@@ -191,13 +243,17 @@ def open_table(
     path: str,
     headerRow: int | None = None,
     skipRows: list[list[int]] | None = None,
+    encoding: str | None = None,
 ) -> tuple[str, list[dict[str, str]], int, Path]:
     """打开本地表格文件,返回 (tableId, columns, rowCount, cache_path)。
 
     headerRow: 1-based,指定哪一行作为列名 schema;null=自动(首行当表头,即 parquet 原首行值作列名)。
     skipRows: [[a,b],...] 1-based 闭区间段,这些行从数据中剔除(不计入 rowCount,不返回)。
+    encoding: 文件编码(仅对 .tab/.txt/.tsv 生效)。None=自动探测(utf8-lossy + chardet);
+             指定(如 "gbk")则强制用该编码读。.xlsx/.xls 忽略此参数(二进制格式自带编码)。
 
-    tableId = sha1(path|mtime|size),不含 header/skip(同内容不同配置共享 parquet 缓存)。
+    tableId = sha1(path|mtime|size|encoding),不含 header/skip(同内容不同配置共享 parquet 缓存),
+    但含 encoding(换编码不共享缓存,各自落 parquet,避免按首次编码缓存导致换编码不生效)。
     parquet 缓存仍是「全量原始行」(不做行剔除);剔除/表头逻辑在 read_rows 与 open 响应里按配置应用。
 
     columns: 若 headerRow 指定,读 parquet 第 headerRow-1 行(0-based)作为列名;
@@ -209,7 +265,7 @@ def open_table(
         raise FileNotFoundError(f"表格文件不存在: {path}")
 
     skip_norm = _normalize_skip_rows(skipRows)
-    mtime, size, table_id = _file_signature(path)
+    mtime, size, table_id = _file_signature(path, encoding)
     parquet_path, meta_path = _cache_paths(table_id)
 
     meta = _load_meta(meta_path)
@@ -228,10 +284,10 @@ def open_table(
             # polars 1.43 read_excel 支持 has_header(不支持 header_row),列名为 column_1/2/...
             df = pl.read_excel(path, engine="calamine", has_header=False)
         elif ext in _TAB_EXT:
-            df = _read_tab(path)
+            df = _read_tab(path, encoding=encoding)
         else:
             # 未知扩展名:按 \t 分隔文本兜底尝试
-            df = _read_tab(path)
+            df = _read_tab(path, encoding=encoding)
         # 落盘 Parquet(列式,后续可 mmap)
         df.write_parquet(parquet_path)
         _write_meta(meta_path, path=path, mtime=mtime, size=size, table_id=table_id)
@@ -637,6 +693,7 @@ def column_unique(
     headerRow: int | None = None,
     skipRows: list[list[int]] | None = None,
     filters: dict[str, list[str]] | None = None,
+    search: str | None = None,
 ) -> tuple[list[dict[str, Any]], bool]:
     """取某列的去重值 + 每个值的重复数目(按数目降序)。
 
@@ -644,9 +701,12 @@ def column_unique(
     filters 应由调用方排除「本列」——本列已选值不传入,使计数反映按其他列筛选后该值出现次数
     (本列已选值也能看到它的总数)。列值统一 cast Utf8 字符串化。
 
+    search:可选,大小写不敏感子串过滤。group_by 仍跑全量去重(不省这步成本),在 Python 侧
+    对结果按 search 子串过滤后再截断 COLUMN_UNIQUE_LIMIT。无 search 时维持原前 N 逻辑。
+
     返回 (values, truncated):
     - values: [{value: str, count: int}],按 count 降序;count = 该值在筛选后可见行里的出现次数。
-    - truncated: True 表示去重值超过 COLUMN_UNIQUE_LIMIT 被截断,前端应提示。
+    - truncated: True 表示「过滤后」去重值超过 COLUMN_UNIQUE_LIMIT 被截断,前端应提示。
     """
     parquet_path, _ = _cache_paths(table_id)
     if not parquet_path.exists():
@@ -681,9 +741,17 @@ def column_unique(
     )
     values_raw = grouped["__v"].to_list()
     counts_raw = grouped["__c"].to_list()
-    truncated = len(values_raw) > COLUMN_UNIQUE_LIMIT
+
+    # search 过滤:大小写不敏感子串。group_by 跑全量后,在 Python 侧按 search 子串过滤,
+    # 再截断。truncated 按「过滤后总数」判定。
+    if search:
+        q = search.lower()
+        items = [(v, c) for v, c in zip(values_raw, counts_raw) if str(v).lower().find(q) >= 0]
+    else:
+        items = list(zip(values_raw, counts_raw))
+    truncated = len(items) > COLUMN_UNIQUE_LIMIT
     out: list[dict[str, Any]] = []
-    for v, c in zip(values_raw[:COLUMN_UNIQUE_LIMIT], counts_raw[:COLUMN_UNIQUE_LIMIT]):
+    for v, c in items[:COLUMN_UNIQUE_LIMIT]:
         out.append({"value": "" if v is None else str(v), "count": int(c)})
     return out, truncated
 

@@ -44,35 +44,44 @@ class TableOpenRequest(BaseModel):
     path: str
     headerRow: int | None = None  # 1-based;null=自动(首行当表头)
     skipRows: list[list[int]] = []  # [[a,b],...] 1-based 闭区间段
+    encoding: str | None = None  # 文件编码(仅 .tab/.txt/.tsv);null=自动探测
 
 
 @app.post("/api/table/open")
 def table_open(req: TableOpenRequest):
     """打开本地表格文件(xlsx/xls/tab/txt/tsv),落盘 Parquet 缓存,返回 schema 与 rowCount。
 
-    - 若 body 不带 headerRow/skipRows(默认 null/[]):读 table-config.json 该 path 的记录
-      (有则用,无则 null/[])。
+    - 若 body 不带 headerRow/skipRows/encoding(默认 null/[]/null):读 table-config.json 该 path 的记录
+      (有则用,无则 null/[]/null)。
     - 若 body 带:用传入值(打开时配置弹窗提交),且不写 table-config.json(写入由
       /api/table/config 单独管)。
     - parquet 缓存仍为全量原始行;columns/rowCount 按配置算。
+    - encoding 进 tableId(换编码各自落 parquet,不共享缓存)。
     """
     if not os.path.exists(req.path):
         raise HTTPException(status_code=404, detail=f"文件不存在: {req.path}")
-    # 判断 body 是否显式带了 headerRow/skipRows(字段出现在请求体即可,值 null/[] 也算显式提供,
-    # 不能用「值非 null/非空」判断,否则用户显式传 headerRow=null 想用自动模式会被误判为没提供而读旧 config)。
-    body_provided = "headerRow" in req.model_fields_set or "skipRows" in req.model_fields_set
+    # 判断 body 是否显式带了 headerRow/skipRows/encoding(字段出现在请求体即可,值 null/[]/null 也算
+    # 显式提供,不能用「值非 null/非空」判断,否则用户显式传 headerRow=null/encoding=null 想用自动
+    # 模式会被误判为没提供而读旧 config)。
+    body_provided = (
+        "headerRow" in req.model_fields_set
+        or "skipRows" in req.model_fields_set
+        or "encoding" in req.model_fields_set
+    )
 
     header_row = req.headerRow
     skip_rows = req.skipRows
+    encoding = req.encoding
     if not body_provided:
-        # body 完全没带 headerRow/skipRows:读 table-config.json 预填
+        # body 完全没带 headerRow/skipRows/encoding:读 table-config.json 预填
         cfg = table_config.load_config(req.path)
         header_row = cfg["headerRow"]
         skip_rows = cfg["skipRows"]
+        encoding = cfg["encoding"]
 
     try:
         table_id, columns, row_count, _ = table_io.open_table(
-            req.path, headerRow=header_row, skipRows=skip_rows
+            req.path, headerRow=header_row, skipRows=skip_rows, encoding=encoding
         )
     except FileNotFoundError as e:
         raise HTTPException(status_code=404, detail=str(e))
@@ -84,6 +93,7 @@ def table_open(req: TableOpenRequest):
         "columns": columns,
         "headerRow": header_row,
         "skipRows": skip_rows,
+        "encoding": encoding,
     }
 
 
@@ -164,6 +174,7 @@ class ColumnValuesRequest(BaseModel):
     headerRow: int | None = None
     skipRows: list[list[int]] = []
     filters: dict[str, list[str]] | None = None  # 调用方应排除本列,使计数=按其他列筛选后的值计数
+    search: str | None = None  # 大小写不敏感子串过滤(过滤后截断);None=不过滤
 
 
 @app.post("/api/table/column-values")
@@ -172,7 +183,8 @@ def table_column_values(req: ColumnValuesRequest):
 
     范围:应用 headerRow/skipRows + filters(其他列)筛选后的可见行集合。filters 应排除本列,
     使本列已选值也能看到它的总数。列值统一按字符串处理。
-    返回 {values: [{value, count}], truncated}。truncated=True 表示超过上限被截断。
+    search:可选,大小写不敏感子串过滤(过滤后再截断 5000);None=不过滤维持原前 5000 逻辑。
+    返回 {values: [{value, count}], truncated}。truncated=True 表示过滤后超过上限被截断。
     """
     try:
         values, truncated = table_io.column_unique(
@@ -181,6 +193,7 @@ def table_column_values(req: ColumnValuesRequest):
             headerRow=req.headerRow,
             skipRows=req.skipRows,
             filters=req.filters,
+            search=req.search,
         )
     except FileNotFoundError as e:
         raise HTTPException(status_code=404, detail=str(e))
@@ -195,11 +208,12 @@ class TableConfigRequest(BaseModel):
     path: str
     headerRow: int | None = None
     skipRows: list[list[int]] = []
+    encoding: str | None = None  # 文件编码(仅 .tab/.txt/.tsv);null=自动探测
 
 
 @app.get("/api/table/config")
 def table_config_get(path: str = Query(..., description="文件绝对路径")):
-    """返回该 path 的 {headerRow, skipRows}(无记录返回 {headerRow:null, skipRows:[]})。"""
+    """返回该 path 的 {headerRow, skipRows, encoding}(无记录返回 {headerRow:null, skipRows:[], encoding:null})。"""
     cfg = table_config.load_config(path)
     return cfg
 
@@ -207,7 +221,7 @@ def table_config_get(path: str = Query(..., description="文件绝对路径")):
 @app.post("/api/table/config")
 def table_config_save(req: TableConfigRequest):
     """写入/更新 table-config.json 中该 path 的配置。"""
-    table_config.save_config(req.path, req.headerRow, req.skipRows)
+    table_config.save_config(req.path, req.headerRow, req.skipRows, req.encoding)
     return {"ok": True}
 
 
