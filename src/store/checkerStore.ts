@@ -102,9 +102,16 @@ interface CheckerState {
   /** 全局输入区(新链接/规则名,拉取时创建一个新标签)。 */
   reportUrlInput: string;
   ruleNameInput: string;
+  /** 项目颜色分组(PRD §12.2):appkey → 色号(0-based 首见顺序)。会话内存态,不持久化
+   *  (跨会话不强制固定某项目=某色)。新增 appkey 时自动分配。 */
+  projectColors: Record<string, number>;
 
   setReportUrlInput: (v: string) => void;
   setRuleNameInput: (v: string) => void;
+  /** 确保某 appkey 已分配项目色号(首见顺序),返回色号(0-based)。在拉取时调用。 */
+  ensureProjectColor: (appkey: string) => number;
+  /** 纯读取某 appkey 的色号(未分配返回 -1)。渲染用,不 setState。 */
+  getProjectColorIndex: (appkey: string) => number;
   /** 拉取输入区链接 → 创建一个新报告标签(或复用同 id 已存在标签)并激活。 */
   fetchReport: (backendUrl: string) => Promise<void>;
   /** 切换激活标签。 */
@@ -130,6 +137,33 @@ export function parseReportIdFromUrl(reportUrl: string): number | null {
   return m ? Number(m[1]) : null;
 }
 
+/** 项目颜色分组 8 色序(PRD §12.2 决策42):首见顺序分配,超 8 循环灰。
+ *  深色模式:暗饱和、贴合深石墨底(dark 底亮显)。色号 = 该数组下标。
+ *  light 模式用 PROJECT_COLORS_LIGHT(加深色,浅底可读),见 projectColor()。 */
+export const PROJECT_COLORS: string[] = [
+  "#c8e663", // 1 电石绿(沿用 accent)
+  "#6ab7c6", // 2 天青
+  "#e8a33d", // 3 琥珀橙(沿用 warn)
+  "#e07a7a", // 4 玫瑰红
+  "#9a8ecf", // 5 淡紫
+  "#5fbf9a", // 6 青绿
+  "#7a9bbf", // 7 钢蓝
+  "#9aa3aa", // 8+ 灰(沿用 text-muted)
+];
+
+/** 项目颜色 · light 模式加深版:与深色版同色相,但压到中深明度,
+ *  保证浅底上文字/边框对比度达标(≥4.5:1)。与 PROJECT_COLORS 下标一一对应。 */
+export const PROJECT_COLORS_LIGHT: string[] = [
+  "#4a7d1f", // 1 电石绿(加深)
+  "#1e7a8a", // 2 天青(加深)
+  "#a05f00", // 3 琥珀橙(加深)
+  "#a83232", // 4 玫瑰红(加深)
+  "#5b4da3", // 5 淡紫(加深)
+  "#1f7a5c", // 6 青绿(加深)
+  "#34567a", // 7 钢蓝(加深)
+  "#5a636b", // 8+ 灰(light text-muted)
+];
+
 export const useCheckerStore = create<CheckerState>()(
   persist(
     (set, get) => ({
@@ -137,9 +171,29 @@ export const useCheckerStore = create<CheckerState>()(
       tabs: {},
       reportUrlInput: "",
       ruleNameInput: "",
+      projectColors: {},
 
       setReportUrlInput: (v) => set({ reportUrlInput: v }),
       setRuleNameInput: (v) => set({ ruleNameInput: v }),
+
+      ensureProjectColor: (appkey) => {
+        if (!appkey) return -1;
+        const { projectColors } = get();
+        const existing = projectColors[appkey];
+        if (existing !== undefined) return existing;
+        // 首见顺序分配:下一个未用色号。前 8 个项目用 8 色序,
+        // 超 8 个起统一用灰(色号 7 = PROJECT_COLORS 末位,PRD 决策42)。
+        const used = new Set(Object.values(projectColors));
+        let next = 0;
+        while (used.has(next)) next++;
+        const idx = next >= PROJECT_COLORS.length ? PROJECT_COLORS.length - 1 : next;
+        set({ projectColors: { ...projectColors, [appkey]: idx } });
+        return idx;
+      },
+      getProjectColorIndex: (appkey) => {
+        if (!appkey) return -1;
+        return get().projectColors[appkey] ?? -1;
+      },
 
       fetchReport: async (backendUrl) => {
         const { reportUrlInput, ruleNameInput } = get();
@@ -228,6 +282,8 @@ export const useCheckerStore = create<CheckerState>()(
             throw new Error(`HTTP ${resp.status}${detail ? `: ${detail}` : ""}`);
           }
           const data = (await resp.json()) as CheckerReportResponse;
+          // appkey 确定后分配项目色号(首见顺序,PRD §12.2)。非渲染时机,安全 set。
+          if (data.appkey) get().ensureProjectColor(data.appkey);
           set({
             tabs: {
               ...get().tabs,

@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Button, Input, Modal, Tooltip } from "antd";
 import {
   LinkOutlined,
@@ -9,6 +9,8 @@ import {
 } from "@ant-design/icons";
 import {
   useCheckerStore,
+  PROJECT_COLORS,
+  PROJECT_COLORS_LIGHT,
   type RuleSummary,
   type ErrorObj,
 } from "../store/checkerStore";
@@ -23,7 +25,8 @@ interface CheckerViewProps {
 /**
  * 配置检查器视图(第一层:汇总 + 第二层:详情弹窗)。
  *
- * 多报告标签页(PRD §12.2):两级导航 —— 顶部项目标签行 + 该项目的报告标签行。
+ * 多报告标签页(PRD §12.2 决策36):单行报告标签 —— 每个标签 = 项目前缀 + 报告ID + 分支别名,
+ * 项目归属靠标签项目前缀 + 项目色双重标识(无独立项目统计行)。
  * 每个报告标签状态独立(拉取结果/展开/审核缓存),切换不丢。
  *
  * 第一层:输入报告链接(+ 可选规则名)→ 点【拉取结果】→ 后端调 rulecheck MCP 取全量规则结果
@@ -45,6 +48,7 @@ export default function CheckerView({ backendUrl }: CheckerViewProps) {
   const setActiveReport = useCheckerStore((s) => s.setActiveReport);
   const refetchReport = useCheckerStore((s) => s.refetchReport);
   const closeReport = useCheckerStore((s) => s.closeReport);
+  const getProjectColorIndex = useCheckerStore((s) => s.getProjectColorIndex);
 
   // 激活标签(可能 null=还没拉任何报告)。
   const activeTab = activeReportId != null ? tabs[activeReportId] ?? null : null;
@@ -137,17 +141,6 @@ export default function CheckerView({ backendUrl }: CheckerViewProps) {
     });
   }, [failRules, searchQuery]);
   const hitCount = filteredRules.length;
-
-  // 两级导航:项目标签行(按 appkey 分组) + 报告标签行。
-  const projectTabs = useMemo(() => {
-    const seen = new Map<string, number[]>(); // appkey → reportIds
-    for (const [id, t] of Object.entries(tabs)) {
-      const key = t.appkey ?? "未分组";
-      if (!seen.has(key)) seen.set(key, []);
-      seen.get(key)!.push(Number(id));
-    }
-    return Array.from(seen.entries());
-  }, [tabs]);
 
   return (
     <div
@@ -262,7 +255,8 @@ export default function CheckerView({ backendUrl }: CheckerViewProps) {
         </Button>
       </div>
 
-      {/* 两级导航(PRD §12.2):项目标签行 + 报告标签行 */}
+      {/* 单行报告标签(PRD §12.2 决策36):标签 = 项目前缀 + 报告ID + 分支别名 + 项目色。
+          不再有独立项目统计行,项目归属靠标签项目前缀 + 项目色双重标识。 */}
       {Object.keys(tabs).length > 0 && (
         <div
           style={{
@@ -271,79 +265,81 @@ export default function CheckerView({ backendUrl }: CheckerViewProps) {
             borderBottom: "1px solid var(--border)",
             padding: "6px 12px",
             display: "flex",
-            flexDirection: "column",
             gap: 6,
+            alignItems: "center",
+            flexWrap: "wrap",
           }}
         >
-          {/* 项目行 */}
-          <div style={{ display: "flex", gap: 6, alignItems: "center", flexWrap: "wrap" }}>
-            {projectTabs.map(([project, ids]) => (
-              <span
-                key={project}
-                style={{
-                  fontFamily: "var(--font-mono)",
-                  fontSize: 11,
-                  color: "var(--accent)",
-                  border: "1px solid var(--accent-dim)",
-                  borderRadius: 3,
-                  padding: "1px 6px",
-                  background: "var(--accent-soft)",
-                }}
-              >
-                {project} ({ids.length})
-              </span>
-            ))}
-          </div>
-          {/* 报告行 */}
-          <div style={{ display: "flex", gap: 6, alignItems: "center", flexWrap: "wrap" }}>
-            {Object.entries(tabs)
-              .sort(([a], [b]) => Number(a) - Number(b))
-              .map(([id, t]) => {
-                const isActive = Number(id) === activeReportId;
-                const isError = Number(id) === -1;
-                return (
-                  <span
-                    key={id}
-                    onClick={() => {
-                      // 恢复的标签(rules 空)→ 点它重新拉取
-                      if (t.rules.length === 0 && !isError) {
-                        void refetchReport(Number(id), backendUrl);
-                      } else {
-                        setActiveReport(Number(id));
-                      }
+          {Object.entries(tabs)
+            .sort(([a], [b]) => Number(a) - Number(b))
+            .map(([id, t]) => {
+              const isActive = Number(id) === activeReportId;
+              const isError = Number(id) === -1;
+              const project = t.appkey ?? "";
+              const idx = getProjectColorIndex(project);
+              const pc = projectColor(project, idx);
+              // 边框/文字/底色:选中=项目色实底深字;未选中=项目色文字 + 12%透明底
+              const borderC = isError
+                ? "var(--danger)"
+                : isActive
+                  ? pc?.hex ?? "var(--accent)"
+                  : pc?.hex ?? "var(--border-strong)";
+              const textC = isError
+                ? "var(--danger)"
+                : isActive
+                  ? pc?.activeText ?? "#0e1113"
+                  : pc?.hex ?? "var(--text)";
+              const bgC = isActive
+                ? pc?.hex ?? "var(--accent)"
+                : pc?.tint ?? "transparent";
+              return (
+                <span
+                  key={id}
+                  onClick={() => {
+                    // 恢复的标签(rules 空)→ 点它重新拉取
+                    if (t.rules.length === 0 && !isError) {
+                      void refetchReport(Number(id), backendUrl);
+                    } else {
+                      setActiveReport(Number(id));
+                    }
+                  }}
+                  style={{
+                    fontFamily: "var(--font-mono)",
+                    fontSize: 11,
+                    cursor: "pointer",
+                    color: textC,
+                    background: bgC,
+                    border: `1px solid ${borderC}`,
+                    borderRadius: 3,
+                    padding: "1px 8px",
+                    display: "inline-flex",
+                    alignItems: "center",
+                    gap: 4,
+                  }}
+                >
+                  {isError ? (
+                    "无 reportId"
+                  ) : (
+                    <>
+                      {/* 项目前缀 + 报告 ID + 分支别名(PRD 决策42) */}
+                      <span>{t.appkey ? `${t.appkey} · ` : ""}#{id}</span>
+                      {(t.branchAlia || t.branch) && (
+                        <span style={{ opacity: 0.7, marginLeft: 2 }}>
+                          ({t.branchAlia || t.branch})
+                        </span>
+                      )}
+                    </>
+                  )}
+                  <CloseOutlined
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      closeReport(Number(id));
                     }}
-                    style={{
-                      fontFamily: "var(--font-mono)",
-                      fontSize: 11,
-                      cursor: "pointer",
-                      color: isActive ? "#0e1113" : isError ? "var(--danger)" : "var(--text)",
-                      background: isActive ? "var(--accent)" : "transparent",
-                      border: `1px solid ${isActive ? "var(--accent)" : "var(--border-strong)"}`,
-                      borderRadius: 3,
-                      padding: "1px 8px",
-                      display: "inline-flex",
-                      alignItems: "center",
-                      gap: 4,
-                    }}
-                  >
-                    {isError ? "无 reportId" : `#${id}`}
-                    {/* 分支别名(PRD §12.1):优先别名,为空回退分支路径 */}
-                    {(t.branchAlia || t.branch) && (
-                      <span style={{ opacity: 0.7, marginLeft: 2 }}>
-                        ({t.branchAlia || t.branch})
-                      </span>
-                    )}
-                    <CloseOutlined
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        closeReport(Number(id));
-                      }}
-                      style={{ fontSize: 9, opacity: 0.6 }}
-                    />
-                  </span>
-                );
-              })}
-          </div>
+                    style={{ fontSize: 9, opacity: 0.6 }}
+                  />
+                </span>
+              );
+            })}
         </div>
       )}
 
@@ -514,6 +510,27 @@ export default function CheckerView({ backendUrl }: CheckerViewProps) {
   );
 }
 
+/** 项目颜色分组:取某 appkey 的项目色 + 12% 透明底色(PRD §12.2)。
+ *  色号=首见顺序(store 分配),超 8 循环灰;无项目(appkey 空)→ 返回 null(用默认色)。
+ *  按主题选色板:dark 用暗饱和色(深底亮显),light 用加深色(浅底可读)。
+ *  选中态实底文字色 light 用白、dark 用深石墨 #0e1113(由调用方取 pc.activeText)。 */
+function projectColor(appkey: string | null, index: number): { hex: string; tint: string; activeText: string } | null {
+  if (!appkey || index < 0) return null;
+  const palette = isLightTheme() ? PROJECT_COLORS_LIGHT : PROJECT_COLORS;
+  const hex = palette[index % palette.length];
+  // 12% 透明底:hex → rgba(hex, 0.12),同 --accent-soft 手法
+  const r = parseInt(hex.slice(1, 3), 16);
+  const g = parseInt(hex.slice(3, 5), 16);
+  const b = parseInt(hex.slice(5, 7), 16);
+  return { hex, tint: `rgba(${r},${g},${b},0.12)`, activeText: isLightTheme() ? "#ffffff" : "#0e1113" };
+}
+
+/** 是否 light 主题:<html data-theme="light">(theme.css 据此切 CSS 变量)。默认 dark。 */
+function isLightTheme(): boolean {
+  if (typeof document === "undefined") return false;
+  return document.documentElement.getAttribute("data-theme") === "light";
+}
+
 /** 列表里的不通过/异常规则行。整行点击打开详情弹窗。 */
 function RuleRow({ rule, onOpen }: { rule: RuleSummary; onOpen: () => void }) {
   const errorCount = rule.result.error_count;
@@ -639,9 +656,48 @@ function RuleDetailBody({
   const isException = rule.status === "exception";
   const traceback = isException ? rule.note?.message || "" : "";
 
+  // 规则详情懒加载(PRD §5 2026-08 改稿):弹窗打开时实时拉 rule-detail,
+  // 描述区 loading→展示;失败提示+重试,不阻断弹窗(errorObj 列表照常显示)。
+  const appkey = useCheckerStore(
+    (s) => (s.activeReportId != null ? s.tabs[s.activeReportId]?.appkey ?? null : null),
+  );
+  const [detail, setDetail] = useState<{ ruleDesc: string; scriptPath: string } | null>(null);
+  const [detailLoading, setDetailLoading] = useState(true);
+  const [detailError, setDetailError] = useState<string | null>(null);
+
+  const loadDetail = useCallback(async () => {
+    if (!appkey) {
+      setDetailLoading(false);
+      setDetailError("无 appkey,无法加载规则详情");
+      return;
+    }
+    setDetailLoading(true);
+    setDetailError(null);
+    const base = backendUrl.replace(/\/$/, "");
+    try {
+      const resp = await fetch(
+        `${base}/api/checker/rule-detail?appkey=${encodeURIComponent(appkey)}&ruleId=${rule.rule_id}`,
+      );
+      if (!resp.ok) {
+        const t = await resp.text().catch(() => "");
+        throw new Error(`HTTP ${resp.status}${t ? ` ${t}` : ""}`);
+      }
+      const d = (await resp.json()) as { ruleDesc: string; scriptPath: string };
+      setDetail(d);
+    } catch (e) {
+      setDetailError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setDetailLoading(false);
+    }
+  }, [appkey, backendUrl, rule.rule_id]);
+
+  useEffect(() => {
+    void loadDetail();
+  }, [loadDetail]);
+
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
-      <RuleMeta rule={rule} />
+      <RuleMeta rule={rule} detail={detail} detailLoading={detailLoading} detailError={detailError} onRetry={loadDetail} />
 
       {totalErrs > 0 && (
         <div>
@@ -693,7 +749,7 @@ function RuleDetailBody({
               lineHeight: 1.5,
               whiteSpace: "pre-wrap",
               wordBreak: "break-word",
-              maxHeight: 320,
+              maxHeight: "45vh",
               overflow: "auto",
             }}
           >
@@ -705,10 +761,24 @@ function RuleDetailBody({
   );
 }
 
-/** 规则元信息。 */
-function RuleMeta({ rule }: { rule: RuleSummary }) {
+/** 规则元信息。detail 为懒加载的规则详情(PRD §5),覆盖 rule 里为空的 ruleDesc/scriptPath。 */
+function RuleMeta({
+  rule,
+  detail,
+  detailLoading,
+  detailError,
+  onRetry,
+}: {
+  rule: RuleSummary;
+  detail: { ruleDesc: string; scriptPath: string } | null;
+  detailLoading: boolean;
+  detailError: string | null;
+  onRetry: () => void;
+}) {
   const { run_time, first_detected_time, rule_assigness } = rule.result;
   const assigneeNames = rule_assigness.map((a) => a.name || a.email).join(", ");
+  const scriptPath = detail?.scriptPath ?? rule.scriptPath;
+  const ruleDesc = detail?.ruleDesc ?? rule.ruleDesc;
   return (
     <div
       style={{
@@ -725,26 +795,51 @@ function RuleMeta({ rule }: { rule: RuleSummary }) {
       <MetaItem label="测试负责人" value={assigneeNames || "无"} />
       <MetaItem label="执行时间" value={run_time ? `${run_time}s` : "-"} />
       <MetaItem label="首次报错" value={first_detected_time || "-"} />
-      <MetaItem label="脚本路径" value={rule.scriptPath || "无"} />
-      {rule.ruleDesc && (
-        <div
-          style={{
-            flex: "1 1 100%",
-            color: "var(--text-dim)",
-            marginTop: 4,
-            whiteSpace: "pre-wrap",
-            maxHeight: 120,
-            overflow: "auto",
-            padding: 6,
-            background: "var(--bg-panel)",
-            borderRadius: 3,
-          }}
-        >
-          <span style={{ color: "var(--text-muted)" }}>规则描述:</span>
-          {"\n"}
-          {rule.ruleDesc}
-        </div>
-      )}
+      <MetaItem label="脚本路径" value={scriptPath || "无"} />
+
+      {/* 规则描述:懒加载区(PRD §5)。loading → 展示;失败提示+重试,不阻断弹窗。 */}
+      <div style={{ flex: "1 1 100%" }}>
+        {detailLoading ? (
+          <span style={{ color: "var(--text-dim)" }}>规则详情加载中…</span>
+        ) : detailError ? (
+          <span style={{ color: "var(--danger)" }}>
+            规则详情加载失败:{detailError}{" "}
+            <button
+              onClick={onRetry}
+              style={{
+                background: "transparent",
+                border: "1px solid var(--border-strong)",
+                color: "var(--warn)",
+                cursor: "pointer",
+                fontFamily: "var(--font-mono)",
+                fontSize: 11,
+                padding: "0 6px",
+                borderRadius: 3,
+              }}
+            >
+              重试
+            </button>
+          </span>
+        ) : ruleDesc ? (
+          <div
+            style={{
+              color: "var(--text-dim)",
+              whiteSpace: "pre-wrap",
+              maxHeight: 120,
+              overflow: "auto",
+              padding: 6,
+              background: "var(--bg-panel)",
+              borderRadius: 3,
+            }}
+          >
+            <span style={{ color: "var(--text-muted)" }}>规则描述:</span>
+            {"\n"}
+            {ruleDesc}
+          </div>
+        ) : (
+          <span style={{ color: "var(--text-dim)" }}>无规则描述</span>
+        )}
+      </div>
     </div>
   );
 }

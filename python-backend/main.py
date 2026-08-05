@@ -351,13 +351,14 @@ async def checker_report(req: CheckerReportRequest):
     - ruleName:可选,精确匹配 rule_name 过滤;空/None 返回全部规则
 
     后端按当前环境(checker-config.json 的 env)选 MCP 端点(prod 10.11.66.70 / dev 10.11.82.207),
-    调 MCP get_all_check_results_in_report(reportId) 拿全量 data[],后端本地按 ruleName 过滤,
-    每条规则补规则详情(get_rule_by_rule_id 拿 ruleDesc + scriptPath)。
+    调 MCP get_all_check_results_in_report(reportId) 拿全量 data[],后端本地按 ruleName 过滤。
+    **规则详情懒加载(PRD §5 2026-08 改稿)**:本端点不返回 ruleDesc/scriptPath(为空),
+    用户点开规则弹窗时经 /api/checker/rule-detail 实时拉取(按 appkey 全项目内存缓存)。
 
-    返回 PRD 2.1 结构(每条规则含全字段 + ruleDesc + scriptPath):
+    返回 PRD 2.1 结构(每条规则含全字段 + 空 ruleDesc/scriptPath):
     {
-      "reportId": int, "appkey": str|null,
-      "rules": [{rule_name, rule_id, module, owner, status, note, result:{error_count, content, run_time, first_detected_time, author, testLead, rule_assigness}, ruleDesc, scriptPath}]
+      "reportId": int, "appkey": str|null, "branch": str|null, "branchAlia": str|null,
+      "rules": [{rule_name, rule_id, module, owner, status, note, result:{error_count, content, run_time, first_detected_time, author, testLead, rule_assigness}, ruleDesc:"", scriptPath:""}]
     }
     """
     if not req.reportUrl.strip():
@@ -374,6 +375,22 @@ async def checker_report(req: CheckerReportRequest):
         # MCP 不可达 / 报告不存在 / MCP 返回异常
         raise HTTPException(status_code=502, detail=str(e))
     return result
+
+
+@app.get("/api/checker/rule-detail")
+async def checker_rule_detail(
+    appkey: str = Query(...),
+    ruleId: int = Query(...),
+):
+    """规则详情懒加载(PRD §5 2026-08 改稿):单条规则详情 {ruleDesc, scriptPath}。
+
+    前端点开规则弹窗时调。后端按 appkey 全项目粒度内存缓存(get_all_rules_in_project
+    一次填缓存),首次拉取后该 appkey 下所有规则秒出。失败 → 502(前端提示+重试)。
+    """
+    try:
+        return await rulecheck_client.get_rule_detail(appkey=appkey, rule_id=ruleId)
+    except RuntimeError as e:
+        raise HTTPException(status_code=502, detail=str(e))
 
 
 # ───────────────────────── 模块2 全局设置 ─────────────────────────
@@ -440,6 +457,7 @@ async def checker_audit_post(req: checker_audit.AuditRequest):
 class ResolveTablePathRequest(BaseModel):
     appkey: str
     table_path: str
+    branch: str = ""  # 可选:分支识别出的 SVN 分支,用于精确匹配 appkeyRoots(PRD §12.1)
 
 
 @app.post("/api/checker/resolve-table-path")
@@ -448,15 +466,18 @@ def checker_resolve_table_path(req: ResolveTablePathRequest):
 
     PRD §3.1:errorObj 的 table_path 可能纯文件名(RecipeBelong.txt)或带相对路径,
     前端 ScreenshotGrid 的 open_table 用此端点解析后调 /api/table/open。
+    branch 可选:分支识别出的 SVN 分支,传给 get_appkey_root 精确匹配 appkeyRoots
+    (配置里 branch 通常非空,如 (JX3, "trunk");不传 branch 默认匹配空分支,可能找不到)。
     匹配逻辑:在 appkey 对应的根路径下 glob 递归搜同名文件。
     命中唯一→返回解析后的绝对路径;命中多个→返回第一匹配(并记日志);零命中→404。
     """
     import glob as _glob
     from pathlib import Path as _Path
 
-    root = checker_config.get_appkey_root(req.appkey)
+    root = checker_config.get_appkey_root(req.appkey, req.branch or "")
     if not root:
-        raise HTTPException(status_code=400, detail=f"appkey '{req.appkey}' 未配置工作区根路径,请在全局设置里添加映射")
+        detail = f"appkey '{req.appkey}' 分支 '{req.branch or '(默认)'}' 未配置工作区根路径,请在全局设置里添加映射"
+        raise HTTPException(status_code=400, detail=detail)
     tp = req.table_path.strip()
     if not tp:
         raise HTTPException(status_code=400, detail="table_path 为空")
@@ -469,7 +490,12 @@ def checker_resolve_table_path(req: ResolveTablePathRequest):
     if abs_candidate.is_absolute() and abs_candidate.is_file():
         return {"resolved": str(abs_candidate)}
 
-    # 在根下用 **/<filename> 递归搜
+    # 先尝试完整相对路径(<root>/<table_path>),命中直接返回(更精确,避免同名文件歧义)
+    full_candidate = root_path / tp
+    if full_candidate.is_file():
+        return {"resolved": str(full_candidate)}
+
+    # 回退:在根下用 **/<filename> 递归搜(兼容纯文件名)
     pattern = str(root_path / "**" / _Path(tp).name)
     matches = _glob.glob(pattern, recursive=True)
     if not matches:

@@ -126,24 +126,36 @@ export default function ScreenshotGrid({ backendUrl }: ScreenshotGridProps) {
             }
             // HIGH #2:table_path 可能纯文件名或相对路径,后端 /api/table/open 只收绝对路径。
             // 先调 /api/checker/resolve-table-path 用 appkey→根映射解析成绝对路径。
-            // appkey 从激活标签取(多报告标签页,PRD §12.2)。
+            // appkey + branch 从激活标签取(多报告标签页,PRD §12.2/§12.1)。
+            // 必须传 branch:配置里 appkeyRoots 的 branch 通常非空(如 (JX3,"trunk")),
+            // 不传 branch 默认匹配空分支,会 400 找不到根(截图 404 根因)。
             const st = useCheckerStore.getState();
-            const appkey =
-              st.activeReportId != null ? st.tabs[st.activeReportId]?.appkey ?? null : null;
+            const act =
+              st.activeReportId != null ? st.tabs[st.activeReportId] ?? null : null;
+            const appkey = act?.appkey ?? null;
+            const branch = act?.branch ?? "";
             let resolvedPath = tp;
             if (appkey) {
               try {
                 const rr = await fetch(`${base}/api/checker/resolve-table-path`, {
                   method: "POST",
                   headers: { "Content-Type": "application/json" },
-                  body: JSON.stringify({ appkey, table_path: tp }),
+                  body: JSON.stringify({ appkey, table_path: tp, branch }),
                 });
                 if (rr.ok) {
                   const rd = (await rr.json()) as { resolved: string };
                   if (rd.resolved) resolvedPath = rd.resolved;
+                } else {
+                  const detail = await rr.text().catch(() => "");
+                  // resolve 失败(未配根/找不到表)→ 带明确错误回传,让 Claude 知道并降级
+                  send({
+                    request_id: req.request_id,
+                    error: `open_table 路径解析失败: HTTP ${rr.status}${detail ? ` ${detail}` : ""}`,
+                  });
+                  return;
                 }
               } catch {
-                // 解析失败用原值(可能已是绝对路径),后端 open_table 自己判
+                // 网络异常,用原值(可能已是绝对路径),后端 open_table 自己判
               }
             }
             const r = await fetch(`${base}/api/table/open`, {

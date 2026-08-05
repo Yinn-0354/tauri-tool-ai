@@ -103,7 +103,12 @@ function clearAuditCache(descHash: string): void {
 }
 
 /** 组装审核请求体(PRD §7:errorObj 5 字段 + rule 6 字段 + ruleDesc + scriptPath + appkey)。 */
-function buildAuditPayload(errorObj: ErrorObj, rule: RuleSummary, appkey: string | null) {
+function buildAuditPayload(
+  errorObj: ErrorObj,
+  rule: RuleSummary,
+  appkey: string | null,
+  detail?: { ruleDesc: string; scriptPath: string } | null,
+) {
   return {
     errorObj: {
       table_path: errorObj.table_path,
@@ -120,8 +125,9 @@ function buildAuditPayload(errorObj: ErrorObj, rule: RuleSummary, appkey: string
       note: rule.note,
       status: rule.status,
     },
-    ruleDesc: rule.ruleDesc,
-    scriptPath: rule.scriptPath,
+    // 规则详情懒加载(PRD §5):用审核前拉到的真实详情;拉取失败降级用 rule 上的(现为空)。
+    ruleDesc: detail?.ruleDesc ?? rule.ruleDesc,
+    scriptPath: detail?.scriptPath ?? rule.scriptPath,
     appkey,
   };
 }
@@ -164,7 +170,14 @@ export default function AuditPanel({ errorObj, rule, backendUrl }: AuditPanelPro
   const stepsRef = useRef<AuditStep[]>([]);
   stepsRef.current = steps;
 
-  const start = async () => {
+  // 规则详情(PRD §5 懒加载):审核前先拉 rule-detail 拿真实 ruleDesc/scriptPath,
+  // 否则 payload 里这两项为空(拉取时不再预取)。拉取失败降级空值,审核照跑。
+  const [ruleDetail, setRuleDetail] = useState<{
+    ruleDesc: string;
+    scriptPath: string;
+  } | null>(null);
+
+  const start = async (detail?: { ruleDesc: string; scriptPath: string } | null) => {
     const base = backendUrl.replace(/\/$/, "");
     const controller = new AbortController();
     abortRef.current = controller;
@@ -183,7 +196,7 @@ export default function AuditPanel({ errorObj, rule, backendUrl }: AuditPanelPro
           "Content-Type": "application/json",
           Accept: "text/event-stream",
         },
-        body: JSON.stringify(buildAuditPayload(errorObj, rule, appkey)),
+        body: JSON.stringify(buildAuditPayload(errorObj, rule, appkey, detail ?? ruleDetail)),
         signal: controller.signal,
       });
       if (!resp.ok) {
@@ -292,7 +305,7 @@ export default function AuditPanel({ errorObj, rule, backendUrl }: AuditPanelPro
     }
   };
 
-  // 挂载:有缓存直接还原结果(不重新审核);无缓存自动开始审核。
+  // 挂载:有缓存直接还原结果(不重新审核);无缓存先拉规则详情再自动开始审核。
   // 卸载:中断在途请求,防后端空跑 + 防泄漏。
   useEffect(() => {
     const cached = readAuditCache(errorObj.desc_hash);
@@ -304,8 +317,31 @@ export default function AuditPanel({ errorObj, rule, backendUrl }: AuditPanelPro
       setScreenshotReason(cached.screenshotReason);
       return;
     }
-    void start();
+    // 先拉规则详情(拿真实 ruleDesc/scriptPath),拉完(含失败降级)再 start。
+    // 用局部变量把 detail 直接传进 start,避免 setState 后闭包读到旧值的时序问题。
+    let cancelled = false;
+    void (async () => {
+      let detail: { ruleDesc: string; scriptPath: string } | null = null;
+      if (appkey) {
+        const base = backendUrl.replace(/\/$/, "");
+        try {
+          const resp = await fetch(
+            `${base}/api/checker/rule-detail?appkey=${encodeURIComponent(appkey)}&ruleId=${rule.rule_id}`,
+          );
+          if (resp.ok) {
+            detail = (await resp.json()) as { ruleDesc: string; scriptPath: string };
+          }
+        } catch {
+          // 降级空详情,审核照跑
+        }
+      }
+      if (!cancelled) {
+        setRuleDetail(detail);
+        void start(detail);
+      }
+    })();
     return () => {
+      cancelled = true;
       abortRef.current?.abort();
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps

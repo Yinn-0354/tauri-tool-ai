@@ -16,6 +16,7 @@ MCP 会话短生命周期:每次调用开新 session,跑完关。免鉴权(MCP s
 """
 from __future__ import annotations
 
+import asyncio
 import logging
 import re
 from datetime import date, timedelta
@@ -34,6 +35,13 @@ _MCP_TIMEOUT = 60.0
 
 # 分支识别时间范围(PRD §12.1):今天-7天 ~ 今天。
 _REPORT_LOOKBACK_DAYS = 7
+
+# ───────────────────────── 规则详情懒加载缓存(PRD §5 2026-08 改稿) ─────────────────────────
+# 按 appkey 全项目粒度缓存 get_all_rules_in_project 结果(ruleId → 规则详情 dict)。
+# 首次点开某 appkey 的任一规则弹窗时拉一次填缓存,之后该 appkey 下所有规则
+# (跨报告/跨标签)秒出。进程退出即清(zero 额外清理代码)。
+# ruleId 可能 int 或 str,统一转 int 键。
+_project_rules_cache: dict[str, dict[int, dict[str, Any]]] = {}
 
 
 # ───────────────────────── 链接解析 ─────────────────────────
@@ -170,35 +178,24 @@ async def fetch_report(report_url: str, rule_name_filter: str | None = None) -> 
         wanted = rule_name_filter.strip()
         rules = [r for r in rules if r.get("rule_name") == wanted]
 
-    # 3. 每条规则补规则详情(desc + script_path)
-    # 并发调 get_rule_by_rule_id 会开多个 MCP session,序列化避免连接爆炸。
-    # 规则数通常 <100,串行可接受;后续要并发可改 asyncio.gather。
-    enriched: list[dict[str, Any]] = []
-    for r in rules:
-        rule_id = r.get("rule_id")
-        rule_desc = ""
-        script_path = ""
-        if isinstance(rule_id, int):
-            try:
-                detail = await _call_mcp_tool("get_rule_by_rule_id", {"ruleId": rule_id})
-                if isinstance(detail, dict) and detail.get("code") == 0:
-                    data = detail.get("data") or {}
-                    rule_desc = str(data.get("desc", "") or "")
-                    script_path = str(data.get("script_path", "") or "")
-                else:
-                    log.warning("取规则详情失败 rule_id=%s: %s", rule_id, detail)
-            except RuntimeError as e:
-                # 单条规则详情失败不阻断整体,降级空 desc/script_path
-                log.warning("取规则详情异常 rule_id=%s: %s", rule_id, e)
-        # 浅拷贝 + 补字段(不污染原始)
-        enriched.append({**r, "ruleDesc": rule_desc, "scriptPath": script_path})
+    # 2. 后端本地按 rule_name 精确过滤(可选)
+    if rule_name_filter and rule_name_filter.strip():
+        wanted = rule_name_filter.strip()
+        rules = [r for r in rules if r.get("rule_name") == wanted]
+
+    # 3. 规则详情懒加载(PRD §5 2026-08 改稿):拉取时不再补 desc/script_path,
+    #    rules 里这两项为空。用户点开规则弹窗时经 /api/checker/rule-detail 实时拉取
+    #    (见 get_rule_detail,按 appkey 全项目内存缓存)。这里只透传汇总结果。
+    #    性能收益:拉取快(不再调 get_all_rules_in_project),MCP 调用次数反而更少——
+    #    只有用户实际点开某 appkey 的规则弹窗才拉一次全项目详情,跨报告/跨标签缓存复用。
+    rules_out = [{**r, "ruleDesc": "", "scriptPath": ""} for r in rules]
 
     return {
         "reportId": report_id,
         "appkey": appkey,
         "branch": branch_info["branch"] if branch_info else None,
         "branchAlia": branch_info["branchAlia"] if branch_info else None,
-        "rules": enriched,
+        "rules": rules_out,
     }
 
 
@@ -208,6 +205,39 @@ async def get_project_infos() -> list[dict[str, Any]]:
     if not isinstance(raw, dict) or raw.get("code") != 0:
         raise RuntimeError(f"MCP 取项目列表失败: {raw}")
     return raw.get("data", []) or []
+
+
+# ───────────────────────── 规则详情懒加载(PRD §5 2026-08 改稿) ─────────────────────────
+
+
+async def get_rule_detail(appkey: str, rule_id: int) -> dict[str, str]:
+    """懒加载单条规则详情,返回 {ruleDesc, scriptPath}。
+
+    PRD §5:点开规则弹窗时实时拉取。缓存按 appkey 全项目粒度:
+    - 首次点开某 appkey 的任一规则 → 调 get_all_rules_in_project(appkey) 拿全项目详情填缓存。
+    - 之后该 appkey 下所有规则(跨报告/跨标签)命中缓存秒出。
+    - 进程退出即清,零额外清理代码。
+    拉取失败(MCP 不可达)→ 抛 RuntimeError(端点转 502,前端描述区显示失败+重试,不阻断弹窗)。
+    """
+    cache = _project_rules_cache.get(appkey)
+    if cache is None:
+        # 首次:拿全项目规则详情填缓存
+        raw = await _call_mcp_tool("get_all_rules_in_project", {"projectId": appkey})
+        data = raw.get("data", []) if isinstance(raw, dict) else raw
+        if not isinstance(data, list):
+            raise RuntimeError(f"get_all_rules_in_project 返回 data 非数组: {type(data)}")
+        cache = {}
+        for pr in data:
+            rid = pr.get("ruleId")
+            if isinstance(rid, int):
+                cache[rid] = pr
+        _project_rules_cache[appkey] = cache
+
+    rule = cache.get(rule_id, {})
+    return {
+        "ruleDesc": str(rule.get("desc", "") or ""),
+        "scriptPath": str(rule.get("script_path", "") or ""),
+    }
 
 
 # ───────────────────────── 分支识别(PRD §12.1) ─────────────────────────
